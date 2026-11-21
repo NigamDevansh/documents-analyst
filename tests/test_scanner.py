@@ -450,7 +450,10 @@ def test_no_embedding_key_degrades_to_discovery_rather_than_crashing() -> None:
     from documents_analyst.settings import Settings
     from documents_analyst.worker import main as worker_main
 
-    settings = Settings(_env_file=None, openai_api_key="", gemini_api_key="g-test")
+    # Claude alone: an LLM key, but Claude has no embedding model.
+    settings = Settings(
+        _env_file=None, openai_api_key="", gemini_api_key="", anthropic_api_key="a-test"
+    )
 
     with worker_main.graph_environment(settings) as env:
         assert env is None, "no embedding key must not yield a graph environment"
@@ -459,7 +462,14 @@ def test_no_embedding_key_degrades_to_discovery_rather_than_crashing() -> None:
     # for longer — `build_client` has always refused an empty key. Checked with
     # the local models switched off, because the point of the ordering in
     # `graph_environment` is that neither of them is loaded to reach this.
-    no_llm = Settings(_env_file=None, openai_api_key="k", nli_enabled=False, gliner_enabled=False)
+    no_llm = Settings(
+        _env_file=None,
+        llm_provider="gemini",
+        gemini_api_key="",
+        openai_api_key="k",
+        nli_enabled=False,
+        gliner_enabled=False,
+    )
     with worker_main.graph_environment(no_llm) as env:
         assert env is None, "no LLM key must not yield a graph environment either"
 

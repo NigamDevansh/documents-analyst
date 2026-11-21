@@ -6,8 +6,25 @@ This is the **single tracked home for non-secret runtime configuration**:
 paths, scanner and lease timings, the generated document's file name, budgets,
 logging, MCP, and default model values. Edit it when changing how the application behaves.
 
+Two keys are worth knowing by name:
+
+- **`pile_concurrency`** (default `3`, range 1–16) — how many piles one worker
+  runs at once, one thread lane per pile. Files *inside* a pile are always read
+  and extracted one at a time, in order; this only lets folder 2 start while
+  folder 1 is still being extracted. `1` restores strictly one pile after
+  another. LLM calls from the lanes run concurrently, so raising it multiplies
+  the request rate against your provider — stay inside its rate limit. See
+  [`docs/WORKER_RUNTIME.md`](../docs/WORKER_RUNTIME.md) §1a.
+- **`watch_dir_host`** (default `""`) — display only. Docker Compose sets it
+  from `WATCH_DIR` in `.env` (through `WATCH_DIR_HOST`) so `/health` and the
+  dashboard's setup guide can show the watched folder as you see it on the host
+  instead of `/data/watched`. Blank shows `watch_root`. Nothing reads files
+  through it; to change *which* folder is watched, set `WATCH_DIR` in `.env`.
+
 `.env` is deliberately smaller. It contains only API credentials, optional
-connection/auth tokens, and per-deployment model/provider overrides. A real
+connection/auth tokens, per-deployment model/provider overrides, and `WATCH_DIR`
+— the host folder Docker Compose mounts as the watched folder, which `Settings`
+never reads (it is listed in `COMPOSE_ONLY_FIELDS`). A real
 process environment variable still overrides `runtime.yaml` when Docker or a
 deployment needs a different address or path. Do not put production secrets in
 this directory.

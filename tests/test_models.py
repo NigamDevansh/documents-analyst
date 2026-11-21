@@ -652,3 +652,66 @@ def test_cache_status_reports_without_loading_anything(tmp_path: Path, isolated_
     assert status["complete"] is False
     assert len(status["missing"]) == 2  # type: ignore[arg-type]
     assert str(tmp_path) in str(status["root"])
+
+
+# ── Gemini embeddings (the embedding option for Claude and Gemini users) ───
+
+
+class _FakeGeminiModels:
+    def __init__(self, width: int) -> None:
+        self.width = width
+        self.calls: list[dict] = []
+
+    def embed_content(self, *, model, contents, config):  # noqa: ANN001, ANN201
+        from types import SimpleNamespace
+
+        self.calls.append({"model": model, "contents": list(contents), "config": config})
+        return SimpleNamespace(
+            embeddings=[
+                SimpleNamespace(values=[float(i + 1)] * self.width) for i, _ in enumerate(contents)
+            ]
+        )
+
+
+def _gemini(width: int = 384):  # noqa: ANN202
+    from types import SimpleNamespace
+
+    from documents_analyst_core.embeddings.gemini_embeddings import GeminiEmbeddings
+
+    client = GeminiEmbeddings(api_key="g-test")
+    fake = _FakeGeminiModels(width)
+    client._client = SimpleNamespace(models=fake)
+    return client, fake
+
+
+def test_gemini_embeddings_are_384_wide_normalised_and_in_order() -> None:
+    import math
+
+    client, fake = _gemini()
+    vectors = client.embed_documents(["first", "", "third"])
+
+    assert len(vectors) == 3 and all(len(v) == 384 for v in vectors)
+    assert all(abs(math.sqrt(sum(x * x for x in v)) - 1.0) < 1e-9 for v in vectors)
+    sent = fake.calls[0]
+    assert sent["contents"][1] == " ", "an empty string is padded, never dropped"
+    assert sent["config"].output_dimensionality == 384
+    usage = client.last_usage
+    assert usage is not None and usage.input_tokens > 0, "a billable call is never shown free"
+
+
+def test_gemini_embeddings_refuse_the_wrong_width() -> None:
+    from documents_analyst_core.embeddings.openai_embeddings import EmbeddingUnavailable
+
+    client, _ = _gemini(width=768)
+    with pytest.raises(EmbeddingUnavailable, match="384"):
+        client.embed_documents(["x"])
+
+
+def test_load_embeddings_picks_the_provider() -> None:
+    from documents_analyst_core.embeddings.gemini_embeddings import GeminiEmbeddings
+    from documents_analyst_core.embeddings.openai_embeddings import OpenAIEmbeddings
+    from documents_analyst_core.models import load_embeddings
+
+    gemini, _ = load_embeddings(api_key="g", model_name="gemini-embedding-001", provider="gemini")
+    openai, _ = load_embeddings(api_key="o", model_name="text-embedding-3-small")
+    assert isinstance(gemini, GeminiEmbeddings) and isinstance(openai, OpenAIEmbeddings)

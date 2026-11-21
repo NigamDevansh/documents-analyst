@@ -45,8 +45,21 @@ backend/src/documents_analyst/
 
 A run picks up **every ingested, graph-ready document** in the pile, not one.
 
-`Ingest → Extract → Ground` loop over the batch. `Discrepancy → Audit →
-HumanGate → Commit` happen **once** for the whole batch.
+The graph is `Resolve → Ingest → Extract → Match → Classify → Audit →
+HumanGate → Commit → Reconcile → Audit (pass 2)`. `Ingest` and `Extract` loop
+over the batch **one document at a time, in discovery order** (`ORDER BY
+created_at`): file 1 is fully extracted before file 2 starts, and no two files
+of one pile are ever in flight at once. Grounding (Gate 1) happens inside
+`Extract`, per quote (§2.5). The cross-file stages — `Match`, `Classify`
+(conflicts and amendments), `Audit` against the rulebook, `HumanGate`, and the
+`Commit` that writes the final document — happen **once** for the whole batch.
+
+It is not "finish file 1, including the final document, before file 2". A
+conflict needs two files, so the document is written once per review round, not
+once per file. A file added later is one more run of the same shape, and only
+the sections it affects change. Separate *piles* do run in parallel — up to
+`pile_concurrency` per worker, one thread lane each — but that never splits a
+pile; see [`WORKER_RUNTIME.md`](WORKER_RUNTIME.md) §1a.
 
 Why: the first build of a 4-document pile becomes one run with one review
 queue. A single new document later is also one run, same shape. If it were
@@ -60,7 +73,10 @@ LangGraph keys checkpoints by `thread_id`. We use **`pile_id`**, not `run_id`.
 That is what makes resume-after-approval work: the API knows only the pile, so a
 worker can call `graph.invoke(None, config={"thread_id": pile_id})` and land back
 in the interrupt. It also means one active run per pile by construction, which
-the lease already guarantees anyway.
+the lease already guarantees anyway. (LangGraph's `thread_id` is a checkpoint
+key, not an OS thread. The worker's pile lanes never share one, because two
+lanes never hold the same pile; the one `PostgresSaver` they share locks per
+cursor, so concurrent checkpoints for different piles are safe.)
 
 `None` there is load-bearing. Passing the state again restarts the pile from
 `Ingest` and re-extracts every document a reviewer has been looking at —
@@ -491,7 +507,12 @@ and demanding a header we discard teaches people the header does not matter.
 before it shows you anything gets closed. When it is set, every route needs
 `Authorization: Bearer …` except `/` and `/health` — the landing page's job is
 naming what is misconfigured, and a health check behind a credential cannot be
-used by whatever restarts the container. (Phase 7 will fetch the stream rather
+used by whatever restarts the container. `/health` also carries a `watch`
+block — `path`, `deliverable_filename`, `pile_concurrency`, `scan_interval_s` —
+which is what the dashboard's setup guide reads. `path` is `watch_dir_host` when
+Compose set it from `WATCH_DIR`, so the guide shows the folder as the person sees
+it rather than `/data/watched` inside the container; otherwise `watch_root`.
+(Phase 7 will fetch the stream rather
 than use `EventSource`, which cannot send a header; a token in a query string
 would land in every access log.)
 
@@ -564,7 +585,7 @@ pile's lease, in the same transaction that records it (§2.7). The API only read
 `deliverable.path_for` joins the pile's name to *this process's own*
 `watch_root` and checks the result is still inside it. Two reasons: the worker
 in a container writes `/data/watched/acme/…` while an API on the host reads
-`./watched/acme/…` — the same file under two paths — and a stored path is data,
+`./watched/acme/…` (or `<WATCH_DIR>/acme/…`) — the same file under two paths — and a stored path is data,
 which should not decide a filesystem read.
 
 ---

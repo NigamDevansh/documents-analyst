@@ -1,7 +1,10 @@
 """Worker entrypoint — the discovery loop.
 
 One process, one loop: scan `WATCH_ROOT` every `SCAN_INTERVAL_S`, ingest settled
-files under each pile's lease, then run the graph over what is ready. With no LLM
+files under each pile's lease, then run the graph over what is ready. Every
+subfolder of `WATCH_ROOT` is a pile, and up to `PILE_CONCURRENCY` piles run at
+once, one thread each — folder 2 does not wait for folder 1's extraction. Inside a
+pile the files are still read one at a time, in order. With no LLM
 key it degrades to discovery-and-ingest rather than dying. `notify` makes the
 scan wake sooner but only reconciles, so its absence costs latency; `watchdog`
 was never built. The heartbeat runs between documents, where the lease can
@@ -23,16 +26,27 @@ import os
 import signal
 import socket
 import threading
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
+from documents_analyst import deliverable
 from documents_analyst.db.dsn import psycopg_dsn
+from documents_analyst.db.repo import commits as commit_repo
 from documents_analyst.db.repo import piles as pile_repo
 from documents_analyst.graph.checkpointer import checkpointer
-from documents_analyst.models import EmbeddingUnavailable, LoadedModels, cache_status, load_models
+from documents_analyst.graph.nodes import resolve
+from documents_analyst.models import (
+    EmbeddingUnavailable,
+    LoadedModels,
+    cache_status,
+    load_models,
+    shared_across_threads,
+)
 from documents_analyst.settings import Settings, get_settings
 from documents_analyst.worker import lease, notify, runner
 from documents_analyst.worker.ingest import ShutdownRequested, ingest_pile
@@ -84,7 +98,8 @@ def graph_environment(settings: Settings, *, enabled: bool = True) -> Iterator[G
             model=settings.resolved_model_extract,
             max_retries=settings.llm_max_retries,
         )
-        models = load_models(settings)
+        # One set of weights for every pile thread; the local models take turns.
+        models = shared_across_threads(load_models(settings))
         for warning in models.warnings:
             LOG.warning("%s", warning)
     except (EmbeddingUnavailable, LLMError) as exc:
@@ -95,6 +110,53 @@ def graph_environment(settings: Settings, *, enabled: bool = True) -> Iterator[G
 
     with checkpointer(settings.database_url) as saver:
         yield GraphEnv(checkpointer=saver, models=models, llm=llm)
+
+
+_VERIFIED: dict[str, tuple[int, int, str]] = {}
+"""pile id → (mtime_ns, size, recorded sha) of the final document as last verified. Read
+and written only by the discovery pass, which runs on the main thread, so a plain dict."""
+
+
+def check_final_document(engine: Engine, settings: Settings, fence: Fence) -> bool:
+    """Restore a pile's `final-document.docx` from the record if it is missing, damaged
+    or hand-edited. Returns whether it had to.
+
+    Runs every discovery pass, under the lease discovery already holds, because an idle
+    pile is never claimed for a run — and Resolve, which repairs inside a run, would
+    otherwise not see a deleted file until something else in the folder changed. Cheap
+    when nothing changed: a stat, compared with what was last verified; the file is only
+    re-read when its size, mtime or the recorded document differs."""
+    with engine.begin() as conn:
+        record = commit_repo.recorded(conn, fence.pile_id)
+    if int(record["deliverable_version"] or 0) == 0:
+        return False
+    path = deliverable.path_for(settings, str(record["name"]))
+
+    def stamp() -> tuple[int, int, str] | None:
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size, str(record["deliverable_sha256"]))
+
+    before = stamp()
+    if before is not None and _VERIFIED.get(fence.pile_id) == before:
+        return False
+
+    def renew(f: Fence) -> None:
+        with engine.begin() as conn:
+            if not lease.heartbeat(conn, f.pile_id, f.epoch, ttl_s=settings.lease_ttl_s):
+                raise LostLease(f"lease for pile {f.pile_id} was taken before the repair")
+
+    repaired = resolve.repair_from_record(
+        engine, settings, fence, run_id=str(uuid.uuid4()), record=record, renew=renew
+    )
+    if repaired:
+        LOG.info("%s: restored final-document.docx from the record", record["name"])
+    after = stamp()
+    if after is not None:
+        _VERIFIED[fence.pile_id] = after
+    return repaired
 
 
 def worker_id(settings: Settings) -> str:
@@ -149,6 +211,15 @@ def discover(
                 )
                 for note in result.notes:
                     LOG.info("  %s", note)
+            if stop_event is None or not stop_event.is_set():
+                try:
+                    check_final_document(engine, settings, Fence(pile_id=pile_id, epoch=epoch))
+                except LostLease:
+                    raise
+                except Exception:
+                    # The document is an output; failing to restore it (a read-only
+                    # folder, say) must not mark the pile `error` and stop its runs.
+                    LOG.exception("%s: could not check final-document.docx", pile_dir.name)
             touched += 1
         except LostLease as exc:
             # Not an error — another worker legitimately took it. Every write was
@@ -169,6 +240,35 @@ def discover(
     return touched
 
 
+def pile_lanes(settings: Settings) -> int:
+    """How many piles run at once. `getattr` because tests hand in partial settings."""
+    return max(1, int(getattr(settings, "pile_concurrency", 1) or 1))
+
+
+def _in_parallel(lanes: int, jobs: list[Callable[[], int]], what: str) -> int:
+    """Run `jobs` on up to `lanes` threads and add up what they return. One job that
+    raises is logged and costs only itself — the other piles carry on, the same rule
+    the sequential loop applied to one pile in a pass."""
+    if not jobs:
+        return 0
+    if lanes == 1 or len(jobs) == 1:
+        total = 0
+        for job in jobs:
+            try:
+                total += job()
+            except Exception:
+                LOG.exception("%s failed; the other piles carry on", what)
+        return total
+    total = 0
+    with ThreadPoolExecutor(max_workers=min(lanes, len(jobs)), thread_name_prefix="pile") as pool:
+        for future in [pool.submit(job) for job in jobs]:
+            try:
+                total += future.result()
+            except Exception:
+                LOG.exception("%s failed; the other piles carry on", what)
+    return total
+
+
 def drain_runs(
     engine: Engine,
     settings: Settings,
@@ -179,18 +279,44 @@ def drain_runs(
 ) -> int:
     """Run every pile that has graph-ready work, until there is none left.
 
-    A loop rather than one pile per tick, because a scan that discovers four
-    piles should not take four scan intervals — two minutes of a demo doing
-    nothing visible — to process them.
-
-    `limit` is a circuit breaker, not a batch size. A pile that ends its run
-    still holding ingested documents (a node that wrote nothing, a bug) would
-    otherwise be re-claimed for ever inside one tick, and the loop would never
-    return to check the stop flag.
+    `PILE_CONCURRENCY` lanes, each a thread that claims a pile, runs it, and claims
+    the next. Claiming is `FOR UPDATE SKIP LOCKED` plus a lease (`queue.py`), so two
+    lanes never take the same pile: with folder 1 (5 files) and folder 2 (10 files)
+    each gets a lane and they run side by side, while a third lane finds nothing and
+    returns. With one lane this is the old loop exactly.
     """
     me = worker_id(settings)
-    ran = 0
+    lanes = pile_lanes(settings)
 
+    def lane(n: int) -> Callable[[], int]:
+        # A readable owner per lane, so `lease_owner_id` says which thread holds a
+        # pile. Fencing is by epoch, never by owner, so sharing a prefix is safe.
+        owner = me if lanes == 1 else f"{me}/lane-{n}"
+        return lambda: _drain_lane(
+            engine, settings, graph_env, owner, stop_event=stop_event, limit=limit
+        )
+
+    return _in_parallel(lanes, [lane(n) for n in range(1, lanes + 1)], "a pile run")
+
+
+def _drain_lane(
+    engine: Engine,
+    settings: Settings,
+    graph_env: GraphEnv,
+    me: str,
+    *,
+    stop_event: threading.Event | None,
+    limit: int,
+) -> int:
+    """One lane: claim, run, repeat. A loop rather than one pile per tick, because a
+    scan that discovers four piles should not take four scan intervals to process them.
+
+    `limit` is a circuit breaker, not a batch size. A pile that ends its run still
+    holding ingested documents (a node that wrote nothing, a bug) would otherwise be
+    re-claimed for ever inside one tick, and the loop would never return to check the
+    stop flag.
+    """
+    ran = 0
     while ran < limit:
         if stop_event is not None and stop_event.is_set():
             LOG.info("shutdown requested; not claiming another run")
@@ -219,9 +345,10 @@ def drain_runs(
         )
         ran += 1
         if outcome.paused:
-            # A paused pile still has ingested documents, but `awaiting_review`
-            # excludes it from claim until an approval resumes its checkpoint.
-            break
+            # `awaiting_review` excludes the paused pile from claim until an approval
+            # resumes its checkpoint, so the lane can go straight on to the next pile
+            # instead of leaving it for the next tick.
+            continue
         if not outcome.progressed:
             # The run retired nothing, so the pile is as claimable as before and
             # looping would repeat it verbatim. This is what a provider outage
@@ -251,44 +378,57 @@ def drain_resumes(
     (that run must reach Reconcile and end). A sweep, not a notification handler —
     `NOTIFY` only makes it sooner; a lost one is picked up next tick."""
     me = worker_id(settings)
-    resumed = 0
 
     with engine.begin() as conn:
         candidates = pile_repo.resumable(conn)
 
-    for pile_id in candidates[:limit]:
-        if stop_event is not None and stop_event.is_set():
-            LOG.info("shutdown requested; not resuming another pile")
-            break
-        try:
-            outcome = runner.resume_after_approval(
-                engine,
-                graph_env.checkpointer,
-                settings,
-                graph_env.models,
-                graph_env.llm,
-                pile_id=pile_id,
-                worker_id=me,
-            )
-        except LostLease as exc:
-            LOG.info("resume lost its lease: %s", exc)
-            continue
-        except Exception:
-            # One pile must not take down the pass. It keeps its `awaiting_review`
-            # status and checkpoint, so the next tick tries again.
-            LOG.exception("pile %s failed to resume", pile_id)
-            continue
-        if outcome is None:
-            continue
-        resumed += 1
-        LOG.info(
-            "%s: resumed run %s — %s",
-            outcome.pile_id,
-            outcome.run_id[:8],
-            "paused again at the human gate" if outcome.paused else "finished",
-        )
+    def resume(pile_id: str) -> Callable[[], int]:
+        return lambda: _resume_one(engine, settings, graph_env, pile_id, me, stop_event)
 
-    return resumed
+    return _in_parallel(
+        pile_lanes(settings), [resume(p) for p in candidates[:limit]], "a pile resume"
+    )
+
+
+def _resume_one(
+    engine: Engine,
+    settings: Settings,
+    graph_env: GraphEnv,
+    pile_id: str,
+    me: str,
+    stop_event: threading.Event | None,
+) -> int:
+    """Resume one reviewed pile. 1 if it ran, 0 if it did not."""
+    if stop_event is not None and stop_event.is_set():
+        LOG.info("shutdown requested; not resuming another pile")
+        return 0
+    try:
+        outcome = runner.resume_after_approval(
+            engine,
+            graph_env.checkpointer,
+            settings,
+            graph_env.models,
+            graph_env.llm,
+            pile_id=pile_id,
+            worker_id=me,
+        )
+    except LostLease as exc:
+        LOG.info("resume lost its lease: %s", exc)
+        return 0
+    except Exception:
+        # One pile must not take down the pass. It keeps its `awaiting_review`
+        # status and checkpoint, so the next tick tries again.
+        LOG.exception("pile %s failed to resume", pile_id)
+        return 0
+    if outcome is None:
+        return 0
+    LOG.info(
+        "%s: resumed run %s — %s",
+        outcome.pile_id,
+        outcome.run_id[:8],
+        "paused again at the human gate" if outcome.paused else "finished",
+    )
+    return 1
 
 
 def run_once(
@@ -331,7 +471,12 @@ def main(argv: list[str] | None = None) -> int:
         LOG.warning("model cache at %s is incomplete: %s", status["root"], status["missing"])
 
     engine = create_engine(settings.database_url, pool_pre_ping=True, future=True)
-    LOG.info("worker %s watching %s", worker_id(settings), settings.watch_root)
+    LOG.info(
+        "worker %s watching %s — up to %d pile(s) at once",
+        worker_id(settings),
+        settings.watch_root,
+        pile_lanes(settings),
+    )
 
     stopped = threading.Event()
     # One event, set by three things: a NOTIFY, a signal, and the listener's own

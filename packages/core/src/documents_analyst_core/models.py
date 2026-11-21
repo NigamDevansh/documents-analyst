@@ -53,7 +53,7 @@ class Loaded:
 
 
 def load_embeddings(
-    *, api_key: str, model_name: str = DEFAULT_EMBEDDING_MODEL
+    *, api_key: str, model_name: str = DEFAULT_EMBEDDING_MODEL, provider: str = "openai"
 ) -> tuple[EmbeddingProvider, Loaded]:
     """The one hard failure. Raises rather than returning a degraded client.
 
@@ -68,6 +68,10 @@ def load_embeddings(
     missing key, which is checked without a network call — so the worker still
     stops at startup rather than three documents into a pile.
     """
+    if provider == "gemini":
+        from .embeddings.gemini_embeddings import GeminiEmbeddings
+
+        return GeminiEmbeddings(api_key=api_key, model_name=model_name), Loaded()
     client = OpenAIEmbeddings(api_key=api_key, model_name=model_name)
     return client, Loaded()
 

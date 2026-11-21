@@ -121,6 +121,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "auth": {"token_required": bool(settings.api_token)},
             "degraded": bool(missing) or not db["reachable"] or not models["complete"],
             "missing_configuration": missing,
+            # What the setup guide shows: where pile folders go, as the person sees it
+            # (`WATCH_DIR` on the host, not `/data/watched` inside the container).
+            # The full key list with a set/missing flag each — never a value.
+            "setup": settings.key_checklist(),
+            "watch": {
+                "path": settings.watch_dir_host or str(settings.watch_root),
+                "deliverable_filename": settings.deliverable_filename,
+                "pile_concurrency": settings.pile_concurrency,
+                "scan_interval_s": settings.scan_interval_s,
+            },
         }
 
     def index_available() -> bool:

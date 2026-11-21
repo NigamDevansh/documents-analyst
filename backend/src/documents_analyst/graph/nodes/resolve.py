@@ -15,6 +15,10 @@ human last approved into the document, and the current slots may hold changes no
 reviewed yet. Repairing is not committing — the version number does not move, and the
 event says the file was restored, not updated.
 
+The worker's discovery pass calls `repair_from_record` too, for an idle pile: a pile with
+no new documents is never claimed, so without that a deleted or damaged file would stay
+broken until something unrelated changed in the folder.
+
 A hand edit to `final-document.docx` is overwritten here too. The document is generated:
 a row whose text differs from the record is a claim no source and no reviewer supports.
 """
@@ -22,6 +26,7 @@ a row whose text differs from the record is a claim no source and no reviewer su
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -32,6 +37,7 @@ from documents_analyst.db.repo import events as event_repo
 from documents_analyst.graph.context import RunContext, context_of
 from documents_analyst.graph.state import PileRunState
 from documents_analyst.register import render
+from documents_analyst.settings import Settings
 from documents_analyst.worker.lease import Fence
 
 LOG = logging.getLogger(__name__)
@@ -53,15 +59,31 @@ def repair_if_needed(ctx: RunContext, fence: Fence, run_id: str, record: dict[st
     whether it had to. Also called by `Commit` when a resumed run has nothing new to
     write: a run resumes at the gate, not here, so without that a bad file reported by
     `Reconcile` would be reported again after every answer and never fixed."""
+    return repair_from_record(
+        ctx.engine, ctx.settings, fence, run_id=run_id, record=record, renew=ctx.renew_lease
+    )
+
+
+def repair_from_record(
+    engine: Any,
+    settings: Settings,
+    fence: Fence,
+    *,
+    run_id: str,
+    record: dict[str, Any],
+    renew: Callable[[Fence], None],
+) -> bool:
+    """`repair_if_needed` without a graph context, for the worker's discovery pass. The
+    caller holds the pile's lease; `renew` extends it before the write."""
     sections = deliverable.recorded_sections(record["deliverable_sections"])
-    path = deliverable.path_for(ctx.settings, str(record["name"]))
+    path = deliverable.path_for(settings, str(record["name"]))
     check = deliverable.verify(path, sections)
     if check.ok:
         return False
 
     LOG.warning("pile %s: final document needs repair: %s", fence.pile_id, check.summary())
-    ctx.renew_lease(fence)
-    with ctx.engine.begin() as conn:
+    renew(fence)
+    with engine.begin() as conn:
         commit_repo.lock_for_write(conn, fence)
         deliverable.write(path, title=render.title(str(record["name"])), sections=sections)
         commit_repo.publish(

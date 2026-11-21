@@ -154,4 +154,31 @@ export interface Health {
   database: { reachable: boolean };
   events: { listening: boolean };
   missing_configuration: string[];
+  /** Where pile folders go, as the person sees it (the host side of the Docker
+   * mount), and how they are processed. Optional: an older API omits it. */
+  /** What this deployment needs, as requirements any one key can meet — names and
+   * set/missing only, never a value. */
+  setup?: {
+    requirements: KeyRequirement[];
+    ready: boolean;
+  };
+  watch?: {
+    path: string;
+    deliverable_filename: string;
+    pile_concurrency: number;
+    scan_interval_s: number;
+  };
+}
+
+export interface KeyRequirement {
+  id: "llm" | "embeddings";
+  title: string;
+  purpose: string;
+  any_of: { provider: string; label: string; name: string; set: boolean }[];
+  met: boolean;
+  /** The provider in use (or that will be, once its key is added). */
+  using: string;
+  /** "auto" = picked from the keys present; otherwise the variable that chose it. */
+  chosen_by: string;
+  models: string[];
 }

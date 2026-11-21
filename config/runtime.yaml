@@ -11,11 +11,15 @@
 deliverable_filename: final-document.docx
 
 # Blank LLM_MODEL_* values select the appropriate provider default below.
-llm_provider: gemini
+# Blank = picked from the keys in .env: ANTHROPIC_API_KEY → Claude, else
+# GEMINI_API_KEY → Gemini, else OpenAI. Set gemini | anthropic | openai to choose.
+llm_provider: ""
 llm_default_models:
   gemini: [gemini-3.6-flash, gemini-3.6-flash]
   openai: [gpt-4o, gpt-4o]
-  anthropic: [claude-sonnet-5, claude-haiku-4-5-20251001]
+  anthropic: [claude-haiku-5-5, claude-haiku-5-5]
+# Blank = OpenAI if OPENAI_API_KEY is set, else Gemini. Claude has no embedding model.
+embedding_provider: ""
 llm_max_retries: 3
 
 # The local-development defaults. Docker Compose overrides these paths and the
@@ -40,7 +44,11 @@ watch_dir_host: ""
 
 # These are defaults, not credentials. Put a different model identifier in
 # `.env` when a deployment intentionally overrides one.
-embedding_model: text-embedding-3-small #openai model for embedding
+# Blank = the embedding provider's default below.
+embedding_model: ""
+embedding_default_models:
+  openai: text-embedding-3-small
+  gemini: gemini-embedding-001
 nli_model: MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli
 gliner_model: knowledgator/gliner-pii-base-v1.0
 gliner_threshold: 0.5

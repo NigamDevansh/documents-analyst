@@ -11,6 +11,7 @@ is not also a re-embedding of every row.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -51,7 +52,8 @@ class EmbeddingUnavailable(Exception):
         super().__init__(
             f"Could not embed with {model!r}"
             + (f": {detail}" if detail else "")
-            + ". Set OPENAI_API_KEY (embeddings use OpenAI regardless of LLM_PROVIDER). "
+            + ". Set OPENAI_API_KEY or GEMINI_API_KEY (embeddings come from one of those "
+            "whatever LLM_PROVIDER is — Claude has no embedding model). "
             "Unavailable capability: fact-key embeddings — open subjects cannot be "
             "matched across documents, and there is no honest fallback."
         )
@@ -64,6 +66,11 @@ class OpenAIEmbeddings:
     calls in the same node. Embeddings are cheap, not free, and this repo's own
     rule is that a cost report which shows a billable call as free is lying.
     The node reads it immediately after the call it made; nothing else does.
+
+    **Per thread.** One client is shared by every pile a worker runs at once, so a
+    plain attribute would let pile B's batch overwrite pile A's usage between A's
+    call and A's read — and A's cost report would carry B's tokens. Each thread
+    reads back the usage of the call that thread made.
     """
 
     def __init__(
@@ -79,7 +86,15 @@ class OpenAIEmbeddings:
         self.dimensions = dimensions
         self._api_key = api_key
         self._client: Any = None
-        self.last_usage: Usage | None = None
+        self._local = threading.local()
+
+    @property
+    def last_usage(self) -> Usage | None:
+        return getattr(self._local, "usage", None)
+
+    @last_usage.setter
+    def last_usage(self, usage: Usage | None) -> None:
+        self._local.usage = usage
 
     def _sdk(self) -> Any:
         if self._client is None:

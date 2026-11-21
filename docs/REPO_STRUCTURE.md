@@ -114,7 +114,7 @@ documents-analyst/
 │   └── src/
 │       ├── api/         client.ts · types.ts · spans.ts (offset → highlight) · refresh.ts
 │       ├── components/  Rail · Register · SourcePane · ReviewQueue · Reviewer ·
-│       │                Activity · CostPanel · DocumentDownload · Welcome
+│       │                Activity · CostPanel · DocumentDownload · SetupGuide
 │       ├── hooks/       useEvents (SSE) · useSplit (draggable divider)
 │       └── styles/      tokens.css (palette, type, easings) · app.css
 │
@@ -128,8 +128,9 @@ documents-analyst/
 │   ├── build_fixture_docs.py    .md → .docx with real heading styles
 │   ├── demo_api.sh              the API, end to end, with curl
 │   └── demo_crash.sh            damages final-document.docx, shows Resolve restore it
-├── watched/                     WATCH_ROOT for local runs — one folder per pile;
-│                                each gets its own final-document.docx
+├── watched/                     the default WATCH_DIR — one folder per pile, each
+│                                gets its own final-document.docx; set WATCH_DIR
+│                                in .env to watch a folder elsewhere instead
 ├── tests/                       the whole suite, incl. the invariant tests
 └── docs/                        these markdown files + THREADING.html · UI_AND_LINKING.html
 ```

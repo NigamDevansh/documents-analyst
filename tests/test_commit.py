@@ -591,6 +591,55 @@ def test_a_missing_or_damaged_document_is_restored_from_the_record(
     assert repaired and repaired[0]["payload"]["repaired"] is True
 
 
+@pytest.mark.parametrize("damage", ["deleted", "edited by hand"])
+def test_an_idle_pile_gets_its_document_back_on_the_next_scan(
+    engine: Engine, tmp_path: Path, damage: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An idle pile has no work, so no run is ever claimed and Resolve never sees it. The
+    discovery pass checks the file instead — without that, deleting final-document.docx
+    left it gone until some unrelated change in the folder triggered a run."""
+    from documents_analyst.worker import main as worker_main
+
+    monkeypatch.setattr(worker_main, "_VERIFIED", {})
+    pile_id, contract = seed(engine, tmp_path, f"idle-{damage.split()[0]}")
+    assert run(engine, tmp_path) is not None
+    path = contract.parent / FILENAME
+    recorded = deliverable.recorded_sections(record(engine, pile_id)["deliverable_sections"])
+    settings = settings_for(dsn(engine), tmp_path)
+
+    def discovery_pass() -> bool:
+        with engine.begin() as conn:
+            epoch = lease.acquire(conn, pile_id, "scanner", settings.lease_ttl_s)
+        assert epoch is not None
+        try:
+            return worker_main.check_final_document(
+                engine, settings, Fence(pile_id=pile_id, epoch=epoch)
+            )
+        finally:
+            with engine.begin() as conn:
+                lease.release(conn, pile_id, epoch)
+
+    assert discovery_pass() is False, "an intact file is left alone"
+
+    if damage == "deleted":
+        path.unlink()
+    else:
+        tampered = [
+            deliverable.Section(s.slot_id, s.agreement, s.heading, "USD 1") for s in recorded
+        ]
+        deliverable.write(path, title="tampered", sections=tampered)
+
+    assert discovery_pass() is True
+    assert deliverable.verify(path, recorded).ok
+    assert record(engine, pile_id)["deliverable_version"] == 1, "restoring is not committing"
+
+    calls: list[Path] = []
+    real_verify = deliverable.verify
+    monkeypatch.setattr(deliverable, "verify", lambda p, s: calls.append(p) or real_verify(p, s))
+    assert discovery_pass() is False
+    assert calls == [], "an unchanged file is not re-read every pass"
+
+
 def test_a_write_that_does_not_read_back_is_reported_not_claimed(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

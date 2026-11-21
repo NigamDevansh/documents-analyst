@@ -1,15 +1,22 @@
-# Sample piles — drop a folder into `watched/`, get a final document out
+# Sample piles — drop a folder into the watched folder, get a final document out
 
-Copy any folder here into `watched/` and it becomes a pile:
+Copy any folder here into `watched/` — or into your `WATCH_DIR`, if `.env` points
+the system at a folder elsewhere — and it becomes a pile:
 
 ```bash
-cp -r "doc piles/meridian-health" watched/
+cp -r "doc piles/meridian-health" watched/          # default
+cp -r "doc piles/meridian-health" "$WATCH_DIR"/     # if you set WATCH_DIR
 ```
 
-**Every subdirectory of `watched/` is a pile.** There is no create step, no config
-and no API call: the scanner lists the directory, and any folder it finds becomes
-a pile on the next pass. Files sitting at the top level are never ingested — only
-directories are.
+**Every subdirectory of the watched folder is a pile.** There is no create step,
+no config and no API call: the scanner lists the directory, and any folder it
+finds becomes a pile on the next pass. Files sitting at the top level are never
+ingested — only directories are. Each pile gets its own run, review queue,
+history and `final-document.docx`, and piles are never compared with each other.
+
+Copy in both samples and they are processed side by side, one thread each (up to
+`pile_concurrency`, default 3); inside each pile the files are still read and
+extracted one at a time, in order.
 
 Start the stack with `make up`, then open http://localhost:8000.
 
@@ -18,7 +25,7 @@ Start the stack with `make up`, then open http://localhost:8000.
 | Folder | What it demonstrates |
 |---|---|
 | `meridian-health/` | The full workflow. Two agreements in one pile, a conflict to resolve, and an amendment whose approval **creates** a compliance violation. |
-| `acme/` | The same documents `make up` seeds into `watched/acme` from `fixtures/conflict_pile`: a format alias, a corrupt PDF that is quarantined, conflicts and amendments. |
+| `acme/` | The same documents `make up` seeds into `watched/acme` from `fixtures/conflict_pile` (only when `WATCH_DIR` is the default `./watched`): a format alias, a corrupt PDF that is quarantined, conflicts and amendments. |
 
 ## `meridian-health` — what to look for
 
@@ -52,7 +59,7 @@ dates — and that is what the queue is for.
 ## Adding your own pile
 
 ```
-mkdir watched/my-vendor
+mkdir watched/my-vendor                 # or "$WATCH_DIR"/my-vendor
 cp ~/contracts/*.pdf watched/my-vendor/
 ```
 

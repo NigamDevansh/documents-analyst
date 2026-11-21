@@ -20,7 +20,8 @@ import { Reviewer } from "./components/Reviewer";
 import { ReviewQueue } from "./components/ReviewQueue";
 import { SourcePane } from "./components/SourcePane";
 import { Activity } from "./components/Activity";
-import { Welcome, welcomeKey } from "./components/Welcome";
+import { SetupGate } from "./components/SetupGate";
+import { SetupGuide, welcomeKey } from "./components/SetupGuide";
 import { useEvents } from "./hooks/useEvents";
 import { useSplit } from "./hooks/useSplit";
 
@@ -48,6 +49,9 @@ export function readHash(hash: string = location.hash): { pile: string | null; t
  */
 export default function App() {
   const [piles, setPiles] = useState<PileSummary[]>([]);
+  // Distinguishes "no folders yet" from "not asked yet", so the setup guide does
+  // not flash over a workspace that is about to load.
+  const [pilesLoaded, setPilesLoaded] = useState(false);
   // The hash, not a router. `#pile=<id>&tab=review` makes a specific pile a
   // shareable link — the property the architecture asks for — without adding a
   // routing library to a single-screen app. It also survives a reload, which is
@@ -96,9 +100,9 @@ export default function App() {
     setActor(name);
   }, []);
 
-  // Shown once per reviewer. Four things on this screen are not discoverable —
-  // the name field looks optional, the download is a corner control, and the tabs
-  // give no hint that Review is where the work is.
+  // Shown once per reviewer, and again from the "?" in the sidebar: where pile
+  // folders go, which keys are missing, and how a folder turns into a document —
+  // none of which this screen can show until a folder has been found.
   const [welcomed, setWelcomed] = useState(
     () => localStorage.getItem(welcomeKey(localStorage.getItem("actor"))) === "done",
   );
@@ -124,9 +128,22 @@ export default function App() {
     api.health().then(setHealth).catch(() => setHealth(null));
   }, []);
 
+  // A hash edited by hand (or a link followed inside the open tab) changes no
+  // state on its own: without this, `#…&tab=review` showed the Register.
+  useEffect(() => {
+    const follow = () => {
+      const next = readHash();
+      setTab(next.tab);
+      if (next.pile) setPileId(next.pile);
+    };
+    window.addEventListener("hashchange", follow);
+    return () => window.removeEventListener("hashchange", follow);
+  }, []);
+
   const loadPiles = useCallback(async () => {
     const list = await api.piles();
     setPiles(list);
+    setPilesLoaded(true);
     setPileId((current) => current ?? list[0]?.id ?? null);
   }, []);
 
@@ -281,6 +298,12 @@ export default function App() {
 
   const pile = piles.find((row) => row.id === pileId) ?? null;
 
+  // Missing keys block everything: a dashboard you can click around in while nothing
+  // can ever be analysed only teaches people to wait for an answer that isn't coming.
+  if (health?.setup && !health.setup.ready) {
+    return <SetupGate health={health} onReady={setHealth} />;
+  }
+
   return (
     <div className="shell">
       <Rail
@@ -291,6 +314,7 @@ export default function App() {
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
         reviewer={<Reviewer actor={actor} onChange={nameReviewer} />}
+        onHelp={() => setWelcomed(false)}
       />
 
       <main className="main">
@@ -356,6 +380,10 @@ export default function App() {
           </div>
         )}
 
+        {pilesLoaded && piles.length === 0 ? (
+          <SetupGuide health={health} variant="inline" />
+        ) : (
+          <>
         <div className="tabs" role="tablist">
           {(
             [
@@ -449,8 +477,10 @@ export default function App() {
             </motion.div>
           )}
         </div>
+          </>
+        )}
 
-        <Activity events={events} live={live} running={pile?.status === "running"} />
+        {pile && <Activity events={events} live={live} running={pile.status === "running"} />}
       </main>
 
       {/* Deliberately NOT wrapped in AnimatePresence. Its exit never completed
@@ -462,7 +492,11 @@ export default function App() {
         *
         * A dismissal has nothing to animate out of anyway: the useful behaviour
         * is that it is gone the instant it is clicked. */}
-      {!welcomed && <Welcome onDismiss={dismissWelcome} />}
+      {/* With no pile yet the same guide already fills the workspace inline; a modal
+       * over it would say everything twice. */}
+      {!welcomed && !(pilesLoaded && piles.length === 0) && (
+        <SetupGuide health={health} variant="modal" onDismiss={dismissWelcome} />
+      )}
 
       <AnimatePresence>
         {toast && (

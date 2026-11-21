@@ -23,15 +23,29 @@ Open <http://localhost:8000>. `make api` has reload enabled; stop it with
 make worker-local
 ```
 
-The worker discovers and ingests: drop a folder into `watched/` and it becomes a
-pile with its documents read, hashed and stored. With an LLM key set, the same
-worker runs the graph over it — extraction, grounding, matching, conflict and
-amendment classification, rulebook audit — stops at the human gate, and commits
-approved decisions to the register.
+The worker discovers and ingests: drop a folder into the watched folder and it
+becomes a pile with its documents read, hashed and stored. The watched folder is
+`watched/` in this repo unless `WATCH_DIR` in `.env` points somewhere else (an
+absolute path, no `~`); the Makefile reads the same variable and passes it to the
+host-run targets as `WATCH_ROOT`, so `make api`, `make worker-local` and the
+containers all see one folder. With an LLM key set, the same worker runs the
+graph over it — extraction, grounding, matching, conflict and amendment
+classification, rulebook audit — stops at the human gate, and commits approved
+decisions to the register.
+
+Inside one pile the files are ingested and extracted strictly one at a time, in
+the order they were found; separate piles run side by side, up to
+`pile_concurrency` (`config/runtime.yaml`, default 3) thread lanes per worker.
+Set it to 1 while debugging to get one pile after another and a single-threaded
+log. See [`docs/WORKER_RUNTIME.md`](docs/WORKER_RUNTIME.md) §1a.
 
 ```bash
 make seed && make scan-local     # one pass, against the local database
 ```
+
+`make seed` copies the demo pile into `<WATCH_DIR>/acme`. It refuses to replace
+an existing `acme` folder when `WATCH_DIR` is not the repo's own `./watched`, so
+it never overwrites a folder of yours.
 
 Local tests use the Docker database when they need one:
 
@@ -95,7 +109,8 @@ Or, without Make:
 docker compose --profile full up --build
 ```
 
-The `full` profile starts `db`, one-shot `migrate`, `api`, and the worker. The
+The `full` profile starts `db`, one-shot `migrate`, `api`, and the worker. Both
+mount `${WATCH_DIR:-./watched}` at `/data/watched`. The
 worker scans `WATCH_ROOT` on its timer, ingests settled files, and runs the
 graph through matching, conflict classification, rulebook audit, the human
 gate and the final-document commit when an LLM key is configured.
@@ -117,7 +132,7 @@ make test
 ## Useful commands
 
 ```bash
-curl -fsS http://localhost:8000/health | python3 -m json.tool
+curl -fsS http://localhost:8000/health | python3 -m json.tool   # incl. watch: path, pile_concurrency
 make migrate-status     # migration ledger through Docker
 docker compose exec db psql -U analyst -d documents_analyst
 make down               # stop Docker services; preserves database data

@@ -137,7 +137,7 @@ class FakeAnthropicSDK:
             raise self.error
         blocks = self.blocks
         if blocks is None:
-            blocks = [SimpleNamespace(type="tool_use", input={"capital": "Paris"})]
+            blocks = [SimpleNamespace(type="text", text='{"capital": "Paris"}')]
         return SimpleNamespace(
             content=blocks,
             usage=SimpleNamespace(input_tokens=21, output_tokens=9),
@@ -145,26 +145,66 @@ class FakeAnthropicSDK:
 
 
 def anthropic(**kwargs: Any) -> tuple[AnthropicClient, FakeAnthropicSDK]:
-    client = AnthropicClient(api_key="k", model="claude-haiku-4-5-20251001", sleep=no_sleep)
+    client = AnthropicClient(
+        api_key="k", model=kwargs.pop("model", "claude-haiku-5-5"), sleep=no_sleep
+    )
     sdk = FakeAnthropicSDK(**kwargs)
     client._sdk = sdk
     return client, sdk
 
 
-def test_anthropic_forces_the_tool_so_the_schema_cannot_be_ignored() -> None:
-    """`tools` alone only *offers* the shape. Without `tool_choice` the model
-    may answer in prose and the schema constrains nothing."""
+def test_anthropic_uses_native_structured_output_not_a_forced_tool() -> None:
+    """Current Claude models answer a forced `tool_choice` with a 400, so the schema
+    goes in `output_config.format` and the model is given no tools at all."""
     client, sdk = anthropic()
 
     payload, usage = client.structured(system="S", user="U", schema=SCHEMA, max_tokens=200)
 
     assert payload == {"capital": "Paris"}
     sent = sdk.seen[0]
-    assert sent["tools"][0]["input_schema"] == SCHEMA
-    assert sent["tool_choice"] == {"type": "tool", "name": AnthropicClient.TOOL_NAME}
+    assert "tools" not in sent and "tool_choice" not in sent
+    fmt = sent["output_config"]["format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["schema"]["additionalProperties"] is False
+    assert sent["output_config"]["effort"] == "low", "5.x family: reading, not reasoning"
+    assert sent["max_tokens"] >= 16000, "headroom for thinking before the JSON"
     assert sent["system"] == "S"
     assert sent["messages"] == [{"role": "user", "content": "U"}]
     assert (usage.input_tokens, usage.output_tokens) == (21, 9)
+
+
+def test_older_claude_models_are_not_sent_an_effort() -> None:
+    client, sdk = anthropic(model="claude-haiku-4-5")
+    client.structured(system="S", user="U", schema=SCHEMA, max_tokens=200)
+    assert "effort" not in sdk.seen[0]["output_config"]
+
+
+def test_the_claude_schema_closes_objects_and_keeps_constraints_readable() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "facts": {
+                "type": "array",
+                "maxItems": 40,
+                "items": {
+                    "type": "object",
+                    "properties": {"confidence": {"type": "number", "minimum": 0, "maximum": 1}},
+                    "required": ["confidence"],
+                },
+            }
+        },
+        "required": ["facts"],
+    }
+    out = AnthropicClient.claude_schema(schema)
+
+    assert out["additionalProperties"] is False
+    item = out["properties"]["facts"]["items"]
+    assert item["additionalProperties"] is False
+    confidence = item["properties"]["confidence"]
+    assert "minimum" not in confidence and "maximum" not in confidence
+    assert "minimum=0" in confidence["description"]
+    assert "maxItems" not in out["properties"]["facts"]
+    assert schema["properties"]["facts"]["maxItems"] == 40, "the shared schema is untouched"
 
 
 def test_anthropic_sends_no_tool_on_a_plain_completion() -> None:
@@ -176,16 +216,16 @@ def test_anthropic_sends_no_tool_on_a_plain_completion() -> None:
 
     assert text == "hello"
     assert "tools" not in sdk.seen[0]
-    assert "tool_choice" not in sdk.seen[0]
+    assert "format" not in sdk.seen[0].get("output_config", {})
 
 
-def test_anthropic_skips_thinking_blocks_to_find_the_tool_use() -> None:
-    """Extended thinking puts a `thinking` block first. Reading `content[0]`
-    blindly would return nothing and look like a schema violation."""
+def test_anthropic_skips_thinking_blocks_to_find_the_answer() -> None:
+    """Thinking puts a `thinking` block first. Reading `content[0]` blindly would
+    return nothing and look like a schema violation."""
     client, _ = anthropic(
         blocks=[
-            SimpleNamespace(type="thinking", thinking="considering"),
-            SimpleNamespace(type="tool_use", input={"capital": "Paris"}),
+            SimpleNamespace(type="thinking", thinking=""),
+            SimpleNamespace(type="text", text='{"capital": "Paris"}'),
         ]
     )
 

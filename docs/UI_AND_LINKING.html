@@ -115,6 +115,7 @@
         <tr><td>Click-a-claim: impossible</td><td><b>Works</b></td><td>Same origin, our DOM, our click handler</td></tr>
         <tr><td>Rename by typing in the document</td><td>A <code>label_change</code> review item, applied at commit</td><td>Sections are keyed by slot id, so a renamed heading is an edit of the same section, not a removal plus an addition</td></tr>
         <tr><td>An export button that queued a job</td><td>A plain download link for <code>final-document.docx</code></td><td>The worker writes the file after review, into the pile's own folder — there is nothing to request and nothing to wait for</td></tr>
+        <tr><td>A one-off Welcome modal</td><td><b><code>SetupGuide</code></b>, shown on first load, inline while no pile exists, and on demand from <b>?</b></td><td>The question a newcomer has — where do my folders go, and where does the result land — has a real answer from <code>/health</code>, and it is needed again whenever the workspace is empty (§6)</td></tr>
       </tbody>
     </table>
   </div>
@@ -135,7 +136,7 @@
     </div>
 
     <div class="stages">
-      <span class="st done">resolve</span>›<span class="st done">ingest</span>›<span class="st done">extract</span>›<span class="st done">ground</span>›<span class="st done">match</span>›<span class="st done">classify</span>›<span class="st done">audit</span>›<span class="st now">human_gate</span>›<span class="st">commit</span>›<span class="st">reconcile</span>
+      <span class="st done">resolve</span>›<span class="st done">ingest</span>›<span class="st done">extract</span>›<span class="st done">match</span>›<span class="st done">classify</span>›<span class="st done">audit</span>›<span class="st now">human_gate</span>›<span class="st">commit</span>›<span class="st">reconcile</span>
     </div>
 
     <div class="panes">
@@ -198,7 +199,8 @@ good-faith disputes.</div>
     </div>
   </div>
 
-  <p class="cap">Two panes, not three. Clicking <b>Payment terms</b> on the left highlighted
+  <p class="cap">The top bar wraps onto a second line on a narrow window rather than
+  clipping its chips. Two panes, not three. Clicking <b>Payment terms</b> on the left highlighted
   <code>Net 30</code> on the right — that is the interaction the system exists for: exact provenance.</p>
 </section>
 
@@ -257,7 +259,8 @@ flowchart TD
         <tr><td>The highlight offsets</td><td><code>facts_and_claims.char_start/end</code></td><td>ours</td></tr>
         <tr><td>Live pipeline bar</td><td><code>stage_events</code> over SSE</td><td>ours</td></tr>
         <tr><td>Cost chips</td><td><code>stage_runs</code></td><td>ours</td></tr>
-        <tr><td>The download link</td><td><code>watched/&lt;pile&gt;/final-document.docx</code>, via <code>GET …/deliverable/document</code></td><td>ours, local</td></tr>
+        <tr><td>The download link</td><td><code>&lt;WATCH_DIR&gt;/&lt;pile&gt;/final-document.docx</code> (<code>watched/</code> by default), via <code>GET …/deliverable/document</code>. Before the first commit it reads “No final document yet”</td><td>ours, local</td></tr>
+        <tr><td>The setup guide’s folder path</td><td><code>GET /health</code> → <code>watch.path</code>: the host path from <code>WATCH_DIR</code>, not <code>/data/watched</code></td><td>ours</td></tr>
         <tr><td>"Does the file say what we recorded?"</td><td>the <code>.docx</code> read back against <code>piles.deliverable_sections</code> (<code>GET …/deliverable/verify</code>)</td><td>ours, local</td></tr>
       </tbody>
     </table>
@@ -290,6 +293,40 @@ flowchart TD
   <p class="note">Cost: one local file write. What matters is that the register and the document
   never disagree about what a field is called — and <code>deliverable_commits</code> makes sure
   the rename is applied exactly once.</p>
+</section>
+
+<section>
+  <h2>6 · Getting started: the setup guide</h2>
+  <p><code>frontend/src/components/SetupGuide.tsx</code> replaced the old Welcome modal. It is
+  one text in two shapes, and it says what to do with <em>this</em> installation rather than in
+  general, because it reads the real values from <code>/health</code>.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>When</th><th>Shape</th><th>Why then</th></tr></thead>
+      <tbody>
+        <tr><td>First load</td><td>A modal, dismissed once and remembered per reviewer</td><td>Someone opening the dashboard for the first time needs the folder before anything else</td></tr>
+        <tr><td>No pile exists yet</td><td>Inline, filling the workspace</td><td>An empty workspace is exactly when someone needs to know where to put a folder</td></tr>
+        <tr><td>Any time</td><td>The modal again, from the <b>?</b> button in the sidebar footer, beside the theme toggle</td><td>The answer does not stop being useful after the first visit</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>What it shows:</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Item</th><th>Source</th></tr></thead>
+      <tbody>
+        <tr><td>The watched folder, as you see it on your machine</td><td><code>/health</code> → <code>watch.path</code> — <code>watch_dir_host</code>, which Compose sets from <code>WATCH_DIR</code> in <code>.env</code>; <code>watch_root</code> when that is blank</td></tr>
+        <tr><td>The folder layout: one subfolder per pile, optional <code>rulebook.yaml</code></td><td>Drawn under that path</td></tr>
+        <tr><td>Missing keys</td><td><code>/health</code> → <code>missing_configuration</code></td></tr>
+        <tr><td>How files and piles are processed: files in one pile one at a time, in order; separate piles side by side, up to <code>pile_concurrency</code></td><td><code>/health</code> → <code>watch.pile_concurrency</code></td></tr>
+        <tr><td>The review steps</td><td>Static text</td></tr>
+        <tr><td>Where the result lands: <code>&lt;folder&gt;/&lt;pile&gt;/final-document.docx</code></td><td><code>/health</code> → <code>watch.deliverable_filename</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">The selected pile and tab live in the URL hash, <code>#pile=&lt;id&gt;&amp;tab=review</code>.
+  The app listens to <code>hashchange</code>, so following such a link — or editing the hash by
+  hand — switches the pile and tab in place, without a reload.</p>
 </section>
 
 </div>

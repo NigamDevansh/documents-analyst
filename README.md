@@ -23,6 +23,30 @@ watched/acme/                     ← a folder is a pile
 
 ---
 
+## Quick start
+
+1. **Install Docker** (Desktop on macOS/Windows). Nothing else is needed on the host.
+2. **Add your keys.** `cp .env.example .env`, then set `OPENAI_API_KEY` (embeddings,
+   always needed) and the key for your `LLM_PROVIDER` (`GEMINI_API_KEY` by default, or
+   set `LLM_PROVIDER=openai` and one OpenAI key covers both). `make up` creates `.env`
+   for you if you skip this, and the dashboard lists whatever is still missing.
+3. **Choose where your folders live.** By default it is `watched/` inside this repo:
+   copy each folder of documents into it. To use a folder anywhere else on your
+   machine, set `WATCH_DIR=/absolute/path/to/folder` in `.env` (no `~`). You never move
+   the repo or pass individual files — the system watches that one folder, and **each
+   subfolder of it is one pile**.
+4. **Start it:** `make up`, then open **http://localhost:8000**. The first build takes
+   5–10 minutes (it bakes the local models into the image).
+5. **Review.** Type your name in the sidebar, open the **Review** tab, pick the winning
+   value for each conflict and approve, or reject. Findings from `rulebook.yaml` appear
+   there too.
+6. **Collect the result.** When the queue is empty, `final-document.docx` is written into
+   the pile's own folder (`<WATCH_DIR>/<pile>/final-document.docx`). Download it from the
+   top right of the dashboard, or open it from the folder.
+
+The dashboard shows this same guide, with your actual folder path, on first load and
+whenever no folder has been found yet (the **?** in the sidebar reopens it).
+
 ## Run it
 
 ```bash
@@ -30,7 +54,7 @@ make up
 ```
 
 That is the whole thing: it creates `.env` from the example, puts a demo pile in
-`watched/`, builds, migrates, and starts Postgres, the API and the worker. When
+`watched/` (only while `WATCH_DIR` is the default — never into a folder of yours), builds, migrates, and starts Postgres, the API and the worker. When
 it returns, the dashboard is on **http://localhost:8000** with a folder of
 documents already in it. `make down` stops it.
 
@@ -58,18 +82,17 @@ Keep API keys and model choices in `.env`. Edit
 [`config/runtime.yaml`](config/runtime.yaml) for paths, budgets, timings, the
 final document's file name and other shared, non-secret behaviour.
 
-| Variable | What it is for |
-|---|---|
-| `LLM_PROVIDER` | Defaults to `gemini`; `openai` and `anthropic` are drop-in alternatives |
-| `GEMINI_API_KEY` | The default extraction and adjudication path |
-| `OPENAI_API_KEY` | Embeddings, whichever LLM provider you pick |
+You need **two things**: an LLM key and an embedding key. Until both are set, the
+dashboard shows a setup screen that lists them and blocks everything else. It
+unlocks by itself once they are set (save `.env`, run `make up` again).
 
-By default, extraction and judging both use `gemini-3.6-flash`. Leave
-`LLM_MODEL_EXTRACT` and `LLM_MODEL_JUDGE` blank to use that default, or set them
-to pin a deployment. Gemini's free tier is limited, and Google states that
-free-tier content may be used to improve its products. Review its
-[pricing and data terms](https://ai.google.dev/gemini-api/docs/pricing) before
-using real documents.
+| Need | Any one of | Notes |
+|---|---|---|
+| LLM key: extraction and judging | `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY`, `GEMINI_API_KEY` | With `LLM_PROVIDER` blank, the provider is picked from the keys: Claude, then Gemini, then OpenAI. Set `LLM_PROVIDER` to choose. Claude defaults to `claude-haiku-5-5`. |
+| Embedding key: matching terms across documents | `OPENAI_API_KEY`, `GEMINI_API_KEY` | **Claude has no embedding model**, so a Claude user also adds an OpenAI or Gemini key. |
+
+A single OpenAI key, or a single Gemini key, covers both. You never need a Gemini key
+if you have an OpenAI one.
 
 Writing the final document needs no key and no network. It is local file work.
 
@@ -91,7 +114,7 @@ acme: +8 new, 1 aliased, 0 superseded, 0 restored, 1 quarantined, 0 removed
 `01_msa.md` and `01_msa.docx` are recognised as **one** document, not two that
 disagree about everything. `08_corrupt.pdf` is quarantined with the reason, and
 the other seven documents land normally. More sample piles are in
-[`doc piles/`](doc%20piles/README.md); copy one into `watched/`.
+[`doc piles/`](doc%20piles/README.md); copy one into `watched/` (or your `WATCH_DIR`).
 
 ```bash
 make run         # discover, then run the graph over whatever is ready
@@ -104,6 +127,37 @@ acme: run 6d588b97 over 8 document(s) — finished
 The graph runs in the container because the local models are baked into the
 image rather than installed on your host. `make run-local` does the same on the
 host if you fetched them yourself.
+
+## Folders, files and threads
+
+**One subfolder of the watched folder = one pile = one final document.**
+
+```
+<WATCH_DIR>/
+├── folder1/            5 files  → folder1/final-document.docx
+└── folder2/           10 files  → folder2/final-document.docx
+```
+
+Each pile is processed on its own: its own run, review queue, history and document.
+Nothing from `folder1` is compared with `folder2`.
+
+**Inside one pile, files are processed strictly one at a time, in order** (the order
+they were found). The worker reads file 1 (hash, parse), then file 2, and so on; then
+extracts facts from file 1 completely before starting file 2. No two files of the same pile are ever in flight at
+once. Only after every file is extracted do the cross-file steps run, once, over the
+whole pile: match the facts across files, find conflicts and amendments, check the
+rulebook, stop for your review, then write the final document. That order is required,
+not a choice: a conflict needs two files to exist, so the document is written once per
+review rather than once per file. A file added later goes through the same steps, and
+only the sections it touches change.
+
+**Separate piles run in parallel, one thread each.** With `folder1` and `folder2` both
+waiting, `folder2` does not wait for `folder1`'s extraction. The worker runs up to
+`pile_concurrency` piles at once (`config/runtime.yaml`, default 3; set it to 1 for one
+pile after another). A pile is claimed with `FOR UPDATE SKIP LOCKED` and a fenced lease,
+so two threads — or two worker containers — never process the same pile. The local
+models are shared by the threads and take turns; LLM calls run concurrently, so raise
+`pile_concurrency` only as far as your provider's rate limit allows.
 
 ## The final document
 
@@ -133,7 +187,7 @@ record is what turns these promises into checks:
 | **What changed, when, and why** | `GET /piles/{id}/deliverable/history` returns one row per changed section per version, with the text before and after, both hashes, and the decision that authorised it (or `source_update` / `new_field` / `orphan_flag` when nobody had to decide). |
 | **A decision lands exactly once** | The commit that carries a decision records it in the same transaction as the document write. An approval cannot be applied twice. |
 | **A crash loses nothing** | The file is written to a temp file and renamed into place, inside the transaction that records it. If the process is killed in between, the record rolls back and the next run writes the same sections and records them once. |
-| **The file is never the source of truth** | Every run starts by reading the file back. If it is missing, truncated or hand-edited, it is restored from the record, with no new version. |
+| **The file is never the source of truth** | Every run starts by reading the file back, and so does every scan of an idle pile (a stat each pass; the file is only re-read when it changed). If it is missing, truncated or hand-edited, it is restored from the record within one scan interval, with no new version. |
 | **A success message means it** | After every commit the file is read back off disk and compared section by section. A mismatch raises a review item instead of a success event. |
 
 **Flagging is ungated; choosing and deleting are gated.** A row whose source

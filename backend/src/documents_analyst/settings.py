@@ -17,7 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -50,6 +50,7 @@ ENV_FILE_FIELDS = frozenset(
         "api_token",
         "mcp_token",
         "llm_provider",
+        "embedding_provider",
         "llm_model_extract",
         "llm_model_judge",
         "embedding_model",
@@ -109,7 +110,14 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     anthropic_api_key: str = ""
     openai_api_key: str = ""
-    llm_provider: Literal["gemini", "anthropic", "openai"]
+    llm_provider: Literal["", "gemini", "anthropic", "openai"]
+    """Blank picks the provider from the keys present (see `_pick_providers`): a Claude
+    key means Claude, else a Gemini key means Gemini, else OpenAI. Set it to choose."""
+    embedding_provider: Literal["", "openai", "gemini"] = ""
+    """Where fact-key embeddings come from. Claude has no embedding model, so this is
+    always OpenAI or Gemini. Blank picks OpenAI if its key is set, else Gemini."""
+    _provider_auto: bool = PrivateAttr(default=False)
+    _embedding_auto: bool = PrivateAttr(default=False)
     """Closed on purpose. A bare `str` would let a typo through and fail later with a
     confusing missing-key message; this is rejected at startup, naming the bad value."""
 
@@ -165,8 +173,10 @@ class Settings(BaseSettings):
 
     # ── models ────────────────────────────────────────────────────────────
     embedding_model: str
-    """OpenAI, the only non-local model. Asked for at 384 dims so the `vector(384)` column
-    fits; a different native width would need a migration."""
+    """Blank means the embedding provider's default (`embedding_default_models`). Asked for
+    at 384 dims so the `vector(384)` column fits; a different native width would need a
+    migration."""
+    embedding_default_models: dict[str, str]
     nli_model: str
     gliner_model: str
     gliner_threshold: float
@@ -253,6 +263,41 @@ class Settings(BaseSettings):
     # same origin, so there is no cross-origin request to allow.
 
     # ── derived ───────────────────────────────────────────────────────────
+    @model_validator(mode="after")
+    def _pick_providers(self) -> Settings:
+        """Resolve blank providers from the keys present, once, at construction — so every
+        reader of `llm_provider` sees a concrete provider and nobody re-derives it.
+
+        Claude before Gemini before OpenAI: a Claude user is told to add an OpenAI or Gemini
+        key for embeddings, and that extra key must not take extraction away from Claude.
+        With no key at all it resolves to OpenAI — the one key that covers everything —
+        and the setup screen lists every option."""
+        if not self.llm_provider:
+            picked = (
+                "anthropic"
+                if self.anthropic_api_key
+                else "gemini"
+                if self.gemini_api_key
+                else "openai"
+            )
+            object.__setattr__(self, "llm_provider", picked)
+            self._provider_auto = True
+        if not self.embedding_provider:
+            embed = "openai" if self.openai_api_key or not self.gemini_api_key else "gemini"
+            object.__setattr__(self, "embedding_provider", embed)
+            self._embedding_auto = True
+        return self
+
+    @property
+    def embedding_api_key(self) -> str:
+        return self.openai_api_key if self.embedding_provider == "openai" else self.gemini_api_key
+
+    @property
+    def resolved_embedding_model(self) -> str:
+        if self.embedding_model:
+            return self.embedding_model
+        return self.embedding_default_models.get(self.embedding_provider, "")
+
     @property
     def llm_api_key(self) -> str:
         return {
@@ -291,17 +336,18 @@ class Settings(BaseSettings):
         the first LLM call."""
         missing: list[str] = []
         if not self.llm_api_key:
-            var = {
-                "gemini": "GEMINI_API_KEY",
-                "anthropic": "ANTHROPIC_API_KEY",
-                "openai": "OPENAI_API_KEY",
-            }[self.llm_provider]
-            lost = "fact extraction and adjudication"
-            if self.llm_provider == "openai":
-                # One key, three capabilities — say all three rather than
-                # listing the variable twice further down.
-                lost = "fact extraction, adjudication and embeddings"
-            missing.append(f"{var} — {lost} disabled")
+            if self._provider_auto:
+                missing.append(
+                    "An LLM key — ANTHROPIC_API_KEY (Claude), OPENAI_API_KEY or GEMINI_API_KEY; "
+                    "fact extraction and adjudication disabled"
+                )
+            else:
+                var = {
+                    "gemini": "GEMINI_API_KEY",
+                    "anthropic": "ANTHROPIC_API_KEY",
+                    "openai": "OPENAI_API_KEY",
+                }[self.llm_provider]
+                missing.append(f"{var} — fact extraction and adjudication disabled")
         if not self.resolved_model_extract:
             missing.append(
                 f"LLM_MODEL_EXTRACT — no default for provider {self.llm_provider!r}; "
@@ -312,14 +358,69 @@ class Settings(BaseSettings):
                 f"LLM_MODEL_JUDGE — no default for provider {self.llm_provider!r}; "
                 "adjudication and judge rules disabled"
             )
-        if not self.openai_api_key and self.llm_provider != "openai":
-            # Its own line: embeddings are OpenAI whatever `LLM_PROVIDER` says, so Gemini with
-            # no OpenAI key starts, extracts, adjudicates, and can't match subjects — that
-            # belongs on the banner. Suppressed when the provider IS openai (named above).
-            missing.append(
-                "OPENAI_API_KEY — embeddings (open-subject matching across documents) disabled"
-            )
+        if not self.embedding_api_key:
+            if self._embedding_auto:
+                missing.append(
+                    "OPENAI_API_KEY or GEMINI_API_KEY — embeddings (matching the same term "
+                    "across documents) disabled; Claude has no embedding model"
+                )
+            else:
+                var = "OPENAI_API_KEY" if self.embedding_provider == "openai" else "GEMINI_API_KEY"
+                missing.append(f"{var} — embeddings (EMBEDDING_PROVIDER) disabled")
         return missing
+
+    def key_checklist(self) -> dict[str, object]:
+        """What this deployment needs, as requirements a person can satisfy — the setup
+        screen's content. Names, purposes and set/missing; never a value, not even a
+        prefix: `/health` stays open on a locked-down instance.
+
+        Two requirements, each met by any one of its keys: an LLM key (Claude, OpenAI or
+        Gemini — or exactly the one `LLM_PROVIDER` names) and an embedding key (OpenAI or
+        Gemini; Claude has none). The list is the same on every machine; only the ticks
+        and the provider that was picked differ."""
+        llm_keys = {
+            "anthropic": ("ANTHROPIC_API_KEY", "Claude", self.anthropic_api_key),
+            "openai": ("OPENAI_API_KEY", "OpenAI", self.openai_api_key),
+            "gemini": ("GEMINI_API_KEY", "Gemini", self.gemini_api_key),
+        }
+        llm_options = list(llm_keys) if self._provider_auto else [self.llm_provider]
+        embed_keys = {
+            "openai": ("OPENAI_API_KEY", "OpenAI", self.openai_api_key),
+            "gemini": ("GEMINI_API_KEY", "Gemini", self.gemini_api_key),
+        }
+        embed_options = list(embed_keys) if self._embedding_auto else [self.embedding_provider]
+
+        def option(table: dict[str, tuple[str, str, str]], provider: str) -> dict[str, object]:
+            name, label, value = table[provider]
+            return {"provider": provider, "label": label, "name": name, "set": bool(value)}
+
+        requirements = [
+            {
+                "id": "llm",
+                "title": "An LLM key",
+                "purpose": "reads facts out of each document and judges conflicts",
+                "any_of": [option(llm_keys, p) for p in llm_options],
+                "met": bool(self.llm_api_key),
+                "using": self.llm_provider,
+                "chosen_by": "auto" if self._provider_auto else "LLM_PROVIDER",
+                "models": [self.resolved_model_extract, self.resolved_model_judge],
+            },
+            {
+                "id": "embeddings",
+                "title": "An embedding key",
+                "purpose": "matches the same term across documents. Claude has no embedding "
+                "model, so add an OpenAI or Gemini key even when extracting with Claude",
+                "any_of": [option(embed_keys, p) for p in embed_options],
+                "met": bool(self.embedding_api_key),
+                "using": self.embedding_provider,
+                "chosen_by": "auto" if self._embedding_auto else "EMBEDDING_PROVIDER",
+                "models": [self.resolved_embedding_model],
+            },
+        ]
+        return {
+            "requirements": requirements,
+            "ready": not self.missing_requirements(),
+        }
 
     @property
     def is_degraded(self) -> bool:

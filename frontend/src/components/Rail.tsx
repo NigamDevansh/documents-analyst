@@ -15,6 +15,7 @@ export function Rail({
   theme,
   onToggleTheme,
   reviewer,
+  onHelp,
 }: {
   piles: PileSummary[];
   selected: string | null;
@@ -25,6 +26,8 @@ export function Rail({
   /** Who decisions are recorded as. Passed in rather than built here so the
    * name lives with the state that sends it. */
   reviewer: React.ReactNode;
+  /** Reopens the setup guide: where folders go, and what happens to them. */
+  onHelp: () => void;
 }) {
   return (
     <nav className="rail">
@@ -79,7 +82,8 @@ export function Rail({
         ))}
         {piles.length === 0 && (
           <li className="stat" style={{ padding: "var(--gap-3)" }}>
-            Drop a folder into <code>watched/</code> — it becomes a pile with no setup step.
+            Drop a folder into <code>{health?.watch?.path ?? "watched/"}</code> — it becomes a
+            pile with no setup step.
           </li>
         )}
       </ul>
@@ -94,6 +98,9 @@ export function Rail({
           />
           {health ? (health.degraded ? "degraded" : "ready") : "…"}
         </span>
+        <button className="btn btn--ghost" onClick={onHelp} aria-label="Show the setup guide">
+          ?
+        </button>
         <button
           className="btn btn--ghost"
           onClick={onToggleTheme}

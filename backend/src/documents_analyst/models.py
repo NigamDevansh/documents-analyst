@@ -9,7 +9,10 @@ Both the env var and `model_cache_dir` in config now resolve to the same directo
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import functools
+import threading
+from dataclasses import dataclass, field, replace
+from typing import Any, cast
 
 from documents_analyst_core import model_cache
 from documents_analyst_core.embeddings.base import EmbeddingProvider
@@ -63,7 +66,9 @@ def load_models(settings: Settings) -> LoadedModels:
     warnings: list[str] = []
 
     embeddings, _ = load_embeddings(
-        api_key=settings.openai_api_key, model_name=settings.embedding_model
+        api_key=settings.embedding_api_key,
+        model_name=settings.resolved_embedding_model,
+        provider=settings.embedding_provider,
     )
     nli, nli_state = load_nli(
         enabled=settings.nli_enabled, model_name=settings.nli_model, cache_dir=_hub(cache)
@@ -100,3 +105,41 @@ __all__ = [
     "load_models",
     "resolve_cache",
 ]
+
+
+class _Serialized:
+    """A model that answers one caller at a time. Attribute reads pass straight through;
+    every method call takes the lock.
+
+    The worker runs several piles in parallel threads that share one set of weights —
+    loading a copy per thread would multiply gigabytes. PyTorch inference is safe to share,
+    but a Hugging Face fast tokenizer is not: two threads in it at once raise "Already
+    borrowed". These calls take milliseconds next to an LLM call's seconds, so queueing
+    them costs nothing visible.
+    """
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+        self._lock = threading.Lock()
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        @functools.wraps(attr)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            with self._lock:
+                return attr(*args, **kwargs)
+
+        return call
+
+
+def shared_across_threads(models: LoadedModels) -> LoadedModels:
+    """The same models, with the two local ones serialised. Embeddings are an HTTP client
+    whose only state (`last_usage`) is already per thread, so they stay as they are."""
+    return replace(
+        models,
+        nli=cast(NLIClient, _Serialized(models.nli)),
+        ner=cast(NERClient, _Serialized(models.ner)),
+    )

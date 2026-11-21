@@ -182,15 +182,35 @@ won it.
 ### Volumes
 
 ```yaml
-./watched:/data/watched      # sources in; final-document.docx written per pile
+${WATCH_DIR:-./watched}:/data/watched   # sources in; final-document.docx written per pile
 ```
 
-One mount, shared by `api` and `worker`. The worker writes each pile's final
-document into that pile's own folder (`watched/<pile>/final-document.docx`);
-the API serves it from there, resolving the path by pile name under its own
-`WATCH_ROOT`, so the container path and the host path never have to agree.
+One mount, shared by `api` and `worker`. **`WATCH_DIR` in `.env` chooses the
+host folder** — `./watched` inside the repo by default, or any folder on your
+machine as an absolute path (no `~`: Compose does not expand it). You never move
+the repo and never pass individual files; the system watches that one folder,
+and each subfolder of it is one pile. `WATCH_DIR` is a Compose-only variable:
+it is listed in `COMPOSE_ONLY_FIELDS` in `settings.py`, and `Settings` ignores
+it. Inside the containers the folder is always `/data/watched` (`WATCH_ROOT`).
 
-We never edit or delete an existing contract in `watched/`. The API's document
+Compose also passes `WATCH_DIR_HOST=${WATCH_DIR:-./watched}` to both services,
+which lands in the display-only setting `watch_dir_host`. Nothing reads files
+through it; it exists so `/health` and the dashboard's setup guide can show the
+folder as you see it on the host instead of `/data/watched`.
+
+The worker writes each pile's final document into that pile's own folder
+(`<WATCH_DIR>/<pile>/final-document.docx`); the API serves it from there,
+resolving the path by pile name under its own `WATCH_ROOT`, so the container
+path and the host path never have to agree.
+
+The Makefile reads `WATCH_DIR` from `.env` too (default `./watched`), and the
+host-run targets point `WATCH_ROOT` at it (`LOCAL_PATHS`), so `make api`,
+`make scan-local` and the containers see the same files. `make up` seeds the
+demo pile `acme` only when `WATCH_DIR` is the default `./watched` — never into a
+folder of yours — and `make seed` refuses to replace an existing `<WATCH_DIR>/acme`
+outside the repo's own `watched/`.
+
+We never edit or delete an existing contract in the watched folder. The API's document
 upload writes a new file there, then discovery remains the single owner of
 hashing, deduplication, aliases, quarantining, and the document row. The only
 file the system itself writes is the final document, and the scanner skips
@@ -210,10 +230,12 @@ locks and blocks the very takeover the lease exists to allow
 
 ## 4. A folder is a pile
 
-Every subdirectory of `WATCH_ROOT` is automatically a pile.
+Every subdirectory of `WATCH_ROOT` (on the host, `WATCH_DIR`) is
+automatically a pile, with its own run, review queue, history and
+`final-document.docx`. Piles are never compared with each other.
 
 ```
-watched/
+watched/                  (or your WATCH_DIR)
 ├── acme/                 → pile "acme"
 │   ├── rulebook.yaml
 │   ├── 01_msa.pdf
@@ -227,8 +249,13 @@ scan picks it up — the same reconciliation pass that finds new documents finds
 new piles.
 
 ```bash
-make seed        # copies fixtures/conflict_pile → watched/acme
+make seed        # copies fixtures/conflict_pile → <WATCH_DIR>/acme
 ```
+
+Separate piles are processed in parallel, up to `pile_concurrency` per worker
+(`config/runtime.yaml`, default 3), one thread each; the files inside one pile
+are always taken one at a time, in the order they were found
+([`WORKER_RUNTIME.md`](WORKER_RUNTIME.md) §1a).
 
 If a folder has no `rulebook.yaml`, the pile still works; the audit stage simply
 has no rules to run and produces zero findings.
@@ -301,7 +328,7 @@ make up          ← start here: build, migrate, start everything, open the dash
 make db-up       start only Docker Postgres for local development
 make full-up     the complete Docker stack in the foreground
 make down        stop everything `make up` started; keeps the database volume
-make seed        copy a fixture pile into watched/
+make seed        copy the demo pile into <WATCH_DIR>/acme (won't replace one of yours)
 make run         discover AND run the graph, in the container with the models
 make test        run the full offline suite
 make test-fast   pytest -m "not models"
@@ -328,7 +355,7 @@ first, or you will watch old code do nothing convincingly.
 
 **A pile's `watch_path` is recorded by whoever discovered it.** A pile first
 scanned inside the container holds `/data/watched/acme`, which a host-run API
-cannot write to; uploads then fail with a 409 naming the path. Run both halves
+cannot write to (even though it is the same `WATCH_DIR` on disk); uploads then fail with a 409 naming the path. Run both halves
 on the same side, or rescan from the side you intend to use.
 
 ---

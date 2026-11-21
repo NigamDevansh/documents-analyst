@@ -11,7 +11,11 @@ not a place to add tests as the tree grows.
 
 from __future__ import annotations
 
-from documents_analyst_core.errors import DocumentsAnalystCoreError, ModelUnavailable, QuoteNotVerbatim
+from documents_analyst_core.errors import (
+    DocumentsAnalystCoreError,
+    ModelUnavailable,
+    QuoteNotVerbatim,
+)
 from documents_analyst_core.nli.stub import StubNLI
 from documents_analyst_core.portable.verify import find_quote, verify_quote
 

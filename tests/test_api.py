@@ -663,6 +663,21 @@ def test_health_reports_whether_the_listener_is_up(client: TestClient) -> None:
     assert body["auth"]["token_required"] is False
 
 
+def test_health_tells_the_setup_guide_where_pile_folders_go(engine: Engine, tmp_path: Path) -> None:
+    """Inside a container `watch_root` is `/data/watched`, which is not a path anyone
+    can put a folder in — so the host side of the mount wins when compose supplies it."""
+    plain = settings_for(engine, tmp_path, watch_dir_host="")
+    with TestClient(create_app(plain)) as c:
+        watch = c.get("/health").json()["watch"]
+    assert watch["path"] == str(tmp_path)
+    assert watch["deliverable_filename"] == "final-document.docx"
+    assert watch["pile_concurrency"] >= 1
+
+    hosted = settings_for(engine, tmp_path, watch_dir_host="/Users/someone/contracts")
+    with TestClient(create_app(hosted)) as c:
+        assert c.get("/health").json()["watch"]["path"] == "/Users/someone/contracts"
+
+
 # ── the API has no queries of its own ─────────────────────────────────────
 
 

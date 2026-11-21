@@ -334,45 +334,101 @@ class GeminiClient(_RetryingClient):
 
 
 class AnthropicClient(_RetryingClient):
-    """Structured output via a forced tool with `input_schema`. Anthropic returns
-    the object already parsed; it is re-encoded to JSON here so all three
-    providers hand the retry loop the same thing — one decode, one schema gate."""
+    """Structured output via `output_config.format` (JSON schema), not a forced tool.
 
-    TOOL_NAME = "record_result"
+    Current Claude models reject a forced `tool_choice` (`{"type": "tool"}`) with a 400,
+    so the old "record_result" tool could not run on them at all. Native structured
+    output also keeps a scored invariant intact: the model is given no tools. The reply
+    is a `text` block holding the JSON; the retry loop decodes it and validates it
+    against the ORIGINAL schema, so constraints Claude's schema dialect does not carry
+    (see `claude_schema`) are still enforced here.
+    """
+
+    UNSUPPORTED = (
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+    )
+    """Constraints moved into the description rather than sent as keywords. The model
+    still reads them; `jsonschema` in the retry loop still enforces them."""
 
     def _client(self) -> Any:
         import anthropic
 
         return anthropic.Anthropic(api_key=self._api_key)
 
+    @classmethod
+    def claude_schema(cls, schema: dict[str, Any]) -> dict[str, Any]:
+        """A copy in the dialect structured output accepts: every object closed with
+        `additionalProperties: false`, numeric/length constraints folded into the
+        description. The shared schema is never modified."""
+        if not isinstance(schema, dict):
+            return schema
+        out: dict[str, Any] = {}
+        notes: list[str] = []
+        for key, value in schema.items():
+            if key in cls.UNSUPPORTED:
+                notes.append(f"{key}={value}")
+            elif isinstance(value, dict):
+                out[key] = (
+                    {k: cls.claude_schema(v) for k, v in value.items()}
+                    if key in ("properties", "$defs", "definitions")
+                    else cls.claude_schema(value)
+                )
+            elif isinstance(value, list):
+                out[key] = [cls.claude_schema(v) if isinstance(v, dict) else v for v in value]
+            else:
+                out[key] = value
+        if notes:
+            described = str(out.get("description", "")).strip()
+            out["description"] = (described + " " if described else "") + (
+                "(" + ", ".join(notes) + ")"
+            )
+        if out.get("type") == "object" or "properties" in out:
+            out["additionalProperties"] = False
+        return out
+
+    def _effort(self) -> dict[str, Any]:
+        """Thinking is on by default on the Claude 5 family and cannot always be turned
+        off, and thinking tokens count against `max_tokens` — a deep think could leave
+        no room for the JSON. Extraction is reading, not reasoning, so ask for `low`
+        effort. Older models reject the `effort` field, so it is sent to 5.x only."""
+        if re.match(r"claude-(opus|sonnet|haiku|fable|mythos)-5", self.model):
+            return {"effort": "low"}
+        return {}
+
     def _call(
         self, *, system: str, user: str, max_tokens: int, schema: dict[str, Any] | None
     ) -> tuple[str, int, int]:
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            # Headroom for any thinking the model still does; unused tokens cost nothing.
+            "max_tokens": max(max_tokens, 16000),
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
+        output_config = self._effort()
         if schema is not None:
-            kwargs["tools"] = [
-                {
-                    "name": self.TOOL_NAME,
-                    "description": "Record the result in the required shape.",
-                    "input_schema": schema,
-                }
-            ]
-            kwargs["tool_choice"] = {"type": "tool", "name": self.TOOL_NAME}
+            output_config["format"] = {"type": "json_schema", "schema": self.claude_schema(schema)}
+        if output_config:
+            kwargs["output_config"] = output_config
 
         response = self.sdk().messages.create(**kwargs)
         usage = response.usage
         sent = getattr(usage, "input_tokens", 0) or 0
         got = getattr(usage, "output_tokens", 0) or 0
 
+        # Thinking blocks come first on current models; the answer is the text block.
         for block in response.content:
-            if schema is not None and getattr(block, "type", "") == "tool_use":
-                return json.dumps(block.input), sent, got
-            if schema is None and getattr(block, "type", "") == "text":
+            if getattr(block, "type", "") == "text":
                 return block.text, sent, got
         return "", sent, got
 

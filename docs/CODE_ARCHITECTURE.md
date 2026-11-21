@@ -31,9 +31,18 @@ silent and looks like "the app got slow".
 
 **The insight that settles it:** *our unit of concurrency is the process, not
 the coroutine.* One pile runs under one lease. Inside a pile the pipeline is
-inherently sequential — you cannot classify before you extract. Parallelism
-across piles comes from running more worker processes. Async would buy the
-worker nothing and cost it real complexity.
+inherently sequential — you cannot classify before you extract — and the files
+of one pile are ingested and extracted one at a time, in discovery order.
+Parallelism across piles comes from two places, both plain threads and
+processes rather than an event loop: each worker runs up to `pile_concurrency`
+piles at once on a small thread pool, one lane per pile (default 3; 1 restores
+one pile after another), and you can run more worker processes. Lanes and
+processes are kept apart by the same `FOR UPDATE SKIP LOCKED` claim and fenced
+lease, so a lane is just a worker that happens to share an address space. What
+the lanes share — the checkpointer, the LLM client, the embeddings client and
+the two local models — is made safe once, in `models.shared_across_threads` and
+a thread-local `last_usage`; see [`WORKER_RUNTIME.md`](WORKER_RUNTIME.md) §1a.
+Async would buy the worker nothing and cost it real complexity.
 
 The API is the opposite: many clients polling, SSE connections held open,
 Postgres round-trips. All I/O. Async is plainly correct there.

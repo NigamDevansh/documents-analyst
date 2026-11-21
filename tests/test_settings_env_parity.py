@@ -61,9 +61,7 @@ def test_a_local_dotenv_contains_only_allowed_overrides() -> None:
     if not DOTENV.exists():
         return
     found = {
-        m.group(1)
-        for line in DOTENV.read_text().splitlines()
-        if (m := ASSIGNMENT.match(line))
+        m.group(1) for line in DOTENV.read_text().splitlines() if (m := ASSIGNMENT.match(line))
     } - COMPOSE_ONLY_FIELDS
     assert {name.lower() for name in found} <= ENV_FILE_FIELDS
 
@@ -81,10 +79,13 @@ def test_provider_keys_are_present_and_blank() -> None:
         assert f"\n{key}=\n" in text, f"{key} should be present and empty"
 
 
-def test_example_selects_gemini_as_the_primary_provider() -> None:
+def test_the_example_leaves_the_provider_to_be_picked_from_the_keys() -> None:
+    """Nobody needs a Gemini key: with LLM_PROVIDER blank, whichever key is present
+    decides. The example says so, and says Claude needs an embedding key too."""
     text = ENV_EXAMPLE.read_text()
-    assert "\nLLM_PROVIDER=gemini\n" in text
-    assert "\nGEMINI_API_KEY=\n" in text
+    assert "\nLLM_PROVIDER=\n" in text
+    assert "\nEMBEDDING_PROVIDER=\n" in text
+    assert "Claude has NO embedding model" in text
 
 
 def test_global_config_is_the_baseline_and_env_wins_for_a_deployment(
@@ -132,26 +133,55 @@ def test_llm_provider_rejects_values_outside_the_supported_three() -> None:
         Settings(_env_file=None, llm_provider="geminix")
 
 
-def test_gemini_is_the_default_with_model_defaults() -> None:
-    """The primary provider must be usable with its own key and no model names.
+def bare(**keys: str) -> Settings:
+    """Settings with only the keys given — no `.env`, no provider set."""
+    base = {"gemini_api_key": "", "anthropic_api_key": "", "openai_api_key": ""}
+    return Settings(_env_file=None, llm_provider="", embedding_provider="", **{**base, **keys})
 
-    **It is no longer usable with that key alone**, and the assertion says so
-    rather than being relaxed: embeddings are OpenAI now whichever provider
-    extracts, so a Gemini-only configuration starts, extracts, adjudicates —
-    and cannot match one document's open subjects against another's. That is a
-    real hole, so it belongs on the degraded banner.
-    """
-    from documents_analyst.settings import Settings
 
-    gemini = Settings(_env_file=None, gemini_api_key="y")
-    assert gemini.llm_provider == "gemini"
-    assert gemini.resolved_model_extract == "gemini-3.6-flash"
-    assert gemini.resolved_model_judge == "gemini-3.6-flash"
-    assert gemini.missing_requirements() == [
-        "OPENAI_API_KEY — embeddings (open-subject matching across documents) disabled"
-    ]
+def test_the_provider_is_picked_from_whichever_key_is_present() -> None:
+    assert bare(openai_api_key="o").llm_provider == "openai"
+    assert bare(gemini_api_key="g").llm_provider == "gemini"
+    assert bare(anthropic_api_key="a").llm_provider == "anthropic"
+    # A Claude user adds an OpenAI key for embeddings; that must not take extraction.
+    both = bare(anthropic_api_key="a", openai_api_key="o")
+    assert (both.llm_provider, both.embedding_provider) == ("anthropic", "openai")
+    # An explicit choice always wins.
+    chosen = Settings(
+        _env_file=None, llm_provider="openai", anthropic_api_key="a", openai_api_key="o"
+    )
+    assert chosen.llm_provider == "openai"
 
-    assert not gemini.model_copy(update={"openai_api_key": "z"}).is_degraded
+
+def test_one_openai_key_or_one_gemini_key_is_enough() -> None:
+    """Either covers extraction AND embeddings, so a single key is a full setup."""
+    openai_only = bare(openai_api_key="o")
+    assert openai_only.missing_requirements() == []
+    assert openai_only.resolved_embedding_model == "text-embedding-3-small"
+
+    gemini_only = bare(gemini_api_key="g")
+    assert gemini_only.missing_requirements() == []
+    assert gemini_only.embedding_provider == "gemini"
+    assert gemini_only.resolved_embedding_model == "gemini-embedding-001"
+    assert gemini_only.resolved_model_extract == "gemini-3.6-flash"
+
+
+def test_claude_needs_an_embedding_key_and_says_so() -> None:
+    claude = bare(anthropic_api_key="a")
+    assert claude.llm_provider == "anthropic"
+    assert claude.resolved_model_extract == "claude-haiku-5-5"
+    assert claude.resolved_model_judge == "claude-haiku-5-5"
+    [line] = claude.missing_requirements()
+    assert "OPENAI_API_KEY or GEMINI_API_KEY" in line and "Claude has no embedding model" in line
+    assert bare(anthropic_api_key="a", gemini_api_key="g").missing_requirements() == []
+
+
+def test_no_key_at_all_names_every_option() -> None:
+    lines = bare().missing_requirements()
+    assert any(
+        "ANTHROPIC_API_KEY" in x and "OPENAI_API_KEY" in x and "GEMINI_API_KEY" in x for x in lines
+    )
+    assert any("embeddings" in x for x in lines)
 
 
 def test_openai_and_anthropic_remain_explicit_supported_fallbacks() -> None:
@@ -215,3 +245,29 @@ def test_the_final_document_needs_no_key_and_no_network() -> None:
         source = inspect.getsource(module)
         for client in ("httpx", "requests", "urllib.request"):
             assert f"import {client}" not in source, f"{module.__name__} imports {client}"
+
+
+def test_the_key_checklist_lists_every_option_whether_or_not_it_is_set() -> None:
+    """The setup screen reads the same on every machine; only the ticks differ. A guide
+    that said "everything is configured" told the next person nothing about what to add."""
+    nothing = bare().key_checklist()
+    llm, embed = nothing["requirements"]
+    assert [o["name"] for o in llm["any_of"]] == [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+    ]
+    assert [o["name"] for o in embed["any_of"]] == ["OPENAI_API_KEY", "GEMINI_API_KEY"]
+    assert "Claude has no embedding model" in embed["purpose"]
+    assert not llm["met"] and not embed["met"] and nothing["ready"] is False
+
+    done = bare(anthropic_api_key="a-secret", openai_api_key="o-secret").key_checklist()
+    assert done["ready"] is True
+    assert done["requirements"][0]["using"] == "anthropic"
+    assert "secret" not in repr(done), "names and yes/no only — never a value"
+
+    # Naming a provider narrows the LLM requirement to that one key.
+    named = Settings(_env_file=None, llm_provider="gemini", gemini_api_key="", openai_api_key="")
+    assert [o["name"] for o in named.key_checklist()["requirements"][0]["any_of"]] == [
+        "GEMINI_API_KEY"
+    ]
