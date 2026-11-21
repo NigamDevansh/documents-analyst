@@ -1,0 +1,66 @@
+# Compliance rulebook for the Acme / Cobalt pile.
+#
+# A rulebook lives IN the pile folder, so different piles can hold different
+# policies. Without one the audit stage runs and produces nothing — which is
+# why this file has to exist for `fixtures/ANSWER_KEY.json` to be satisfiable.
+#
+# These three rule ids are asserted by the answer key:
+#   R001  expected_findings                — Cobalt/Sparrow, no liability cap
+#   R002  expected_findings                — Cobalt/Sparrow, Net 60 out of policy
+#   R003  expected_findings_after_amendment — Acme/Beta, only AFTER approval
+#
+# Four of the five operators are deterministic SQL over `facts_and_claims`.
+# They cannot invent a finding, and prompt injection cannot suppress them —
+# `injection_pile` exists to prove exactly that.
+
+rules:
+  - id: R001
+    title: Every agreement must state a liability cap
+    mode: check
+    severity: high
+    assert: exists
+    field: liability_cap_amount
+    rationale: >
+      An agreement with no stated cap leaves exposure unbounded. Absence is the
+      finding, so this is `exists` rather than a comparison.
+
+  - id: R002
+    title: Payment terms must be between 30 and 45 days
+    mode: check
+    severity: medium
+    assert: in
+    field: payment_terms_days
+    values: [30, 45]
+    rationale: >
+      Net 60 fails. Comparison is on the normalised integer, so "thirty (30)
+      days", "Net 30" and "30 days" are all the same value — normalisation is
+      for comparison only and never changes what the register displays.
+
+  - id: R003
+    title: Liability cap must cover at least 12 months of fees
+    mode: check
+    severity: high
+    assert: compare
+    left: liability_cap_amount
+    op: ">="
+    right: "recurring_price * 12"
+    rationale: >
+      The sharpest test in the corpus. Before the amendment,
+      120,000 >= 10,000 x 12 = 120,000 passes EXACTLY. Approving the price
+      amendment makes it 12,000 x 12 = 144,000 and the rule fails. The
+      violation is created by the human's approval, which is what proves the
+      audit re-runs after a commit instead of only at ingest.
+
+  - id: R010
+    title: Termination rights should be mutual
+    mode: judge
+    severity: medium
+    question: >
+      Does the termination clause give both parties equivalent rights to
+      terminate for convenience?
+    section_hint: termination
+    requires_citation: true
+    rationale: >
+      The one rule here that needs reading rather than arithmetic. A judge
+      finding must return a quote that passes the verbatim gate, or the finding
+      is discarded and logged — never shown. "Not mentioned" is not a violation.

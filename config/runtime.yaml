@@ -1,0 +1,73 @@
+# Global runtime configuration — tracked, non-secret, and shared by every run.
+#
+# Edit this file for operational behaviour: scanner cadence, budgets, timeouts,
+# paths, transport, logging, and the default model catalogue. `.env` is only
+# for credentials, connection secrets, and selecting a model/provider for one
+# deployment. Environment variables still override these values when Docker or
+# a deployment needs a context-specific path or address.
+
+# The generated document, written into each pile's own folder:
+# watched/<pile>/final-document.docx. The scanner skips exactly this name.
+deliverable_filename: final-document.docx
+
+# Blank LLM_MODEL_* values select the appropriate provider default below.
+llm_provider: gemini
+llm_default_models:
+  gemini: [gemini-3.6-flash, gemini-3.6-flash]
+  openai: [gpt-4o, gpt-4o]
+  anthropic: [claude-sonnet-5, claude-haiku-4-5-20251001]
+llm_max_retries: 3
+
+# The local-development defaults. Docker Compose overrides these paths and the
+# database hostname for its container network.
+database_url: postgresql+psycopg://analyst:analyst@localhost:5432/documents_analyst
+watch_root: ./watched
+static_dir: ./frontend/dist
+model_cache_dir: .cache/models
+
+scan_interval_s: 30
+scan_deep_every: 20
+settle_seconds: 3
+lease_ttl_s: 90
+job_max_attempts: 3
+worker_id: ""
+# Piles (subfolders of watch_root) run in parallel, one thread each, up to this many.
+# Files inside one pile are always read one at a time. 1 = one pile after another.
+pile_concurrency: 3
+# Display only: the host path of the watched folder. Docker Compose sets it from
+# WATCH_DIR in .env; blank shows watch_root.
+watch_dir_host: ""
+
+# These are defaults, not credentials. Put a different model identifier in
+# `.env` when a deployment intentionally overrides one.
+embedding_model: text-embedding-3-small #openai model for embedding
+nli_model: MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli
+gliner_model: knowledgator/gliner-pii-base-v1.0
+gliner_threshold: 0.5
+nli_enabled: true
+gliner_enabled: true
+# Match only very similar open subjects; lower values create false conflicts.
+subject_similarity: 0.86
+# NLI is a permissive filter. Lowering this sends more pairs to the LLM.
+nli_contradiction_threshold: 0.6
+
+max_llm_cost_usd_per_run: 5.0
+max_documents_per_run: 25
+small_sample: false
+small_sample_sections: 3
+model_prices_path: config/model_prices.json
+
+api_host: 0.0.0.0
+api_port: 8000
+log_level: INFO
+sse_keepalive_s: 15.0
+sse_replay_limit: 500
+
+mcp_api_base_url: http://localhost:8000
+mcp_actor: mcp:agent
+mcp_transport: stdio
+mcp_host: 127.0.0.1
+mcp_port: 8765
+public_api_base_url: ""
+mcp_timeout_s: 30.0
+mcp_confirm_min_chars: 24

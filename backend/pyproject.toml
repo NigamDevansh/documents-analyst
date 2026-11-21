@@ -1,0 +1,49 @@
+[project]
+name = "documents-analyst"
+version = "0.1.0"
+description = "Document pile analyst: API, worker, graph, MCP server."
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+
+dependencies = [
+    "documents-analyst-core",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    # `[asyncio]` is the API's engine, and it is an extra rather than a plain
+    # dependency because it pulls in greenlet — which is how a synchronous repo
+    # function runs on an async connection (`api/deps.run`). Without it the
+    # worker is fine and every API route raises at its first query.
+    "sqlalchemy[asyncio]>=2.0.30",
+    # One driver. LangGraph's checkpointer uses psycopg3 — adding asyncpg
+    # would mean two drivers and two pools in one process.
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3",
+    "langgraph>=0.2.28",
+    "langgraph-checkpoint-postgres>=2.0",
+    "sse-starlette>=2.1",
+    "pydantic>=2.7",             # api/schemas.py, settings.py, mcp/server.py
+    "pydantic-settings>=2.3",
+    "pyyaml>=6",                 # rules/loader.py reads rulebook.yaml
+    "python-multipart>=0.0.9",   # upload endpoint
+    "mcp>=1.2",
+    # Writes the final document (`deliverable.py`). Reading SOURCE .docx files does not
+    # use it: `portable/document_text.py` goes at the zip directly, because python-docx
+    # drops tracked insertions.
+    "python-docx>=1.1",
+]
+
+# `watchdog` was here as a "latency hint" over the polling scanner. It was never
+# imported: `worker/scanner.py` polls with `time`, and that is the whole design.
+# Declaring it meant every image carried a filesystem-event library that no code
+# could ever fire.
+
+# Deliberately absent: LangChain. We call provider SDKs directly and write our
+# own splitter, because generic text splitters discard character offsets and
+# Gate 1 depends on them.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/documents_analyst"]

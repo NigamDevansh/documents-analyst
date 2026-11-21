@@ -1,0 +1,381 @@
+<title>Threads in documents-analyst, by example</title>
+
+<style>
+  :root {
+    --ground: #ffffff;
+    --ink: #16181d;
+    --muted: #5b6069;
+    --rule: #e2e5ea;
+    --panel: #f7f8fa;
+    --accent: #1c4f8b;
+    --accent-soft: #edf2f8;
+    --signal: #8a5a00;
+    --bad: #8c2f2f;
+
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #111317; --ink: #e7e9ed; --muted: #969ca6; --rule: #262b33;
+      --panel: #171a1f; --accent: #82b1e8; --accent-soft: #1a2330;
+      --signal: #d3a250; --bad: #e08585;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #111317; --ink: #e7e9ed; --muted: #969ca6; --rule: #262b33;
+    --panel: #171a1f; --accent: #82b1e8; --accent-soft: #1a2330;
+    --signal: #d3a250; --bad: #e08585;
+  }
+
+  body {
+    background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 60rem; margin: 0 auto; padding: 3rem 1rem 5rem;
+    display: flex; flex-direction: column; gap: 2.75rem;
+  }
+  header { display: flex; flex-direction: column; gap: .5rem; }
+  h1 {
+    font-family: var(--serif); font-size: clamp(1.6rem, 4vw, 2.2rem);
+    font-weight: 500; line-height: 1.15; text-wrap: balance; letter-spacing: -.01em;
+  }
+  .sub { color: var(--muted); max-width: 62ch; }
+  h2 {
+    font-family: var(--serif); font-size: 1.3rem; font-weight: 500;
+    padding-bottom: .4rem; border-bottom: 1px solid var(--rule);
+  }
+  h3 { font-size: 1rem; font-weight: 650; margin: 0; }
+  section { display: flex; flex-direction: column; gap: 1rem; }
+  p { max-width: 66ch; }
+
+  code {
+    font-family: var(--mono); font-size: .85em; background: var(--panel);
+    border: 1px solid var(--rule); border-radius: 3px; padding: .05em .3em;
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 4px;
+    padding: .9rem 1rem; overflow-x: auto; font-size: .84rem; line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 1em; }
+
+  figure { margin: 0; display: flex; flex-direction: column; gap: .6rem; }
+  .plate {
+    border: 1px solid var(--rule); border-radius: 4px; padding: 1rem;
+    overflow-x: auto; background: var(--panel);
+  }
+  .plate svg { max-width: 100%; height: auto; display: block; min-width: 500px; }
+  figcaption { font-size: .88rem; color: var(--muted); max-width: 66ch; }
+
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { text-align: left; padding: .5rem .7rem .5rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+  td.t { font-family: var(--mono); font-size: .8rem; white-space: nowrap; color: var(--muted); }
+  td.w { font-weight: 650; white-space: nowrap; font-size: .82rem; }
+  .scroll { overflow-x: auto; }
+
+  .callout {
+    background: var(--accent-soft); border-left: 2px solid var(--accent);
+    padding: .85rem 1rem; font-size: .95rem; max-width: 66ch;
+  }
+</style>
+
+<div class="wrap">
+
+<header>
+  <h1>Threads in documents-analyst, by example</h1>
+  <p class="sub">Three contracts land in a folder, a human approves one change, and
+  the register updates. Here is what each thread does, moment by moment — and why
+  the threads it <em>doesn’t</em> have are the more interesting decision.</p>
+</header>
+
+<section>
+  <h2>The setup</h2>
+  <p>The worker process has <strong>two</strong> threads:</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Thread</th><th>What it may do</th><th>What it may never do</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="w">main</td>
+          <td>Everything — scan, ingest, run the graph, write the final document</td>
+          <td>Block forever. Every wait has a timeout</td>
+        </tr>
+        <tr>
+          <td class="w">notify-listener</td>
+          <td>Set one boolean: <code>wake</code></td>
+          <td>Touch the database, carry a pile id, do any work</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>They share two booleans — <code>wake</code> (“look sooner”) and
+  <code>stopped</code> (“shut down”) — and nothing else. There is no lock anywhere
+  in the Python.</p>
+</section>
+
+<section>
+  <h2>The example, moment by moment</h2>
+  <p>You copy three contracts into <code>watched/acme/</code> at the instant the
+  worker boots. Here is the real sequence.</p>
+
+  <figure>
+    <div class="plate">
+      <svg viewBox="0 0 780 620" role="img"
+           aria-label="A vertical timeline with two columns, main thread and notify-listener. At time zero main starts the listener, which connects and sets the wake flag. Main's first pass skips three files as too fresh, so its thirty-second wait returns immediately because the flag was set. A second pass also skips them. At thirty seconds the files are settled, main takes the lease and runs the graph, then the human gate saves a checkpoint and releases the lease. At two hundred and fifty seconds a decision is approved, Postgres notifies, the listener sets wake, and main's wait is cut short so the run resumes with a new lease epoch.">
+        <defs>
+          <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <polygon points="0,1 10,5 0,9" fill="currentColor"/>
+          </marker>
+          <marker id="aSig" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <polygon points="0,1 10,5 0,9" fill="var(--signal)"/>
+          </marker>
+        </defs>
+
+        <!-- column headers -->
+        <text x="285" y="26" text-anchor="middle" font-family="system-ui, sans-serif"
+              font-size="12.5" font-weight="650" fill="currentColor">main thread</text>
+        <text x="620" y="26" text-anchor="middle" font-family="system-ui, sans-serif"
+              font-size="12.5" font-weight="650" fill="currentColor">notify-listener</text>
+        <text x="100" y="26" text-anchor="end" font-family="system-ui, sans-serif"
+              font-size="11" fill="currentColor" opacity=".6">time</text>
+
+        <!-- guide lines -->
+        <g stroke="currentColor" stroke-width="1" opacity=".18" stroke-dasharray="3 4">
+          <line x1="285" y1="38" x2="285" y2="596"/>
+          <line x1="620" y1="38" x2="620" y2="596"/>
+        </g>
+
+        <!-- 1 -->
+        <rect x="140" y="50" width="290" height="36" rx="3" fill="var(--ground)" stroke="currentColor" stroke-width="1.3"/>
+        <text x="152" y="72" font-family="system-ui, sans-serif" font-size="11.5" fill="currentColor">boot — start the listener thread</text>
+        <text x="100" y="72" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">0.00 s</text>
+        <line x1="432" y1="68" x2="498" y2="68" stroke="currentColor" stroke-width="1.2" opacity=".6" marker-end="url(#a)"/>
+
+        <!-- 2 -->
+        <rect x="500" y="100" width="240" height="40" rx="3" fill="var(--ground)" stroke="var(--signal)" stroke-width="1.3"/>
+        <text x="512" y="117" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--signal)">LISTEN analyst_work</text>
+        <text x="512" y="132" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--signal)">wake.set()</text>
+        <text x="100" y="124" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">0.01 s</text>
+        <line x1="498" y1="120" x2="434" y2="120" stroke="var(--signal)" stroke-width="1.4" marker-end="url(#aSig)"/>
+
+        <!-- 3 -->
+        <rect x="140" y="154" width="290" height="40" rx="3" fill="var(--ground)" stroke="currentColor" stroke-width="1.3"/>
+        <text x="152" y="171" font-family="system-ui, sans-serif" font-size="11.5" fill="currentColor">pass 1 — scan finds 3 files</text>
+        <text x="152" y="186" font-family="system-ui, sans-serif" font-size="10" fill="currentColor" opacity=".65">all under 3 s old → skipped, not failed</text>
+        <text x="100" y="178" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">0.0–0.4</text>
+
+        <!-- 4 -->
+        <rect x="140" y="208" width="290" height="40" rx="3" fill="var(--ground)" stroke="var(--signal)" stroke-width="1.3" stroke-dasharray="5 3"/>
+        <text x="152" y="225" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--signal)">wake.wait(30 s)</text>
+        <text x="152" y="240" font-family="system-ui, sans-serif" font-size="10" fill="var(--signal)" opacity=".9">returns instantly — flag was set at 0.01</text>
+        <text x="100" y="232" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">0.40 s</text>
+
+        <!-- 5 -->
+        <rect x="140" y="262" width="290" height="40" rx="3" fill="var(--ground)" stroke="currentColor" stroke-width="1.3"/>
+        <text x="152" y="279" font-family="system-ui, sans-serif" font-size="11.5" fill="currentColor">pass 2 — still too fresh</text>
+        <text x="152" y="294" font-family="system-ui, sans-serif" font-size="10" fill="currentColor" opacity=".65">this time the 30 s wait is real</text>
+        <text x="100" y="286" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">0.70 s</text>
+
+        <!-- 6 -->
+        <rect x="140" y="316" width="290" height="54" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.4"/>
+        <text x="152" y="333" font-family="system-ui, sans-serif" font-size="11.5" font-weight="650" fill="var(--accent)">pass 3 — files settled</text>
+        <text x="152" y="348" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">lease acquired · epoch 1 · ingest 3 docs</text>
+        <text x="152" y="362" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">then the graph runs — minutes of LLM calls</text>
+        <text x="100" y="344" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">30.7 s</text>
+
+        <!-- 7 -->
+        <rect x="140" y="384" width="290" height="54" rx="3" fill="var(--ground)" stroke="currentColor" stroke-width="1.4"/>
+        <text x="152" y="401" font-family="system-ui, sans-serif" font-size="11.5" font-weight="650" fill="currentColor">human gate — run pauses</text>
+        <text x="152" y="416" font-family="system-ui, sans-serif" font-size="10" fill="currentColor" opacity=".75">checkpoint written · <tspan font-weight="650">lease released</tspan></text>
+        <text x="152" y="430" font-family="system-ui, sans-serif" font-size="10" fill="currentColor" opacity=".75">main goes back to its normal loop</text>
+        <text x="100" y="412" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">~240 s</text>
+
+        <!-- gap marker -->
+        <text x="285" y="462" text-anchor="middle" font-family="system-ui, sans-serif"
+              font-size="10" fill="currentColor" opacity=".5">⋮ idle — scanning every 30 s, waiting for a person ⋮</text>
+
+        <!-- 8 -->
+        <rect x="500" y="480" width="240" height="40" rx="3" fill="var(--ground)" stroke="var(--signal)" stroke-width="1.3"/>
+        <text x="512" y="497" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--signal)">NOTIFY — a decision settled</text>
+        <text x="512" y="512" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--signal)">wake.set()</text>
+        <text x="100" y="504" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">250 s</text>
+        <line x1="498" y1="500" x2="434" y2="500" stroke="var(--signal)" stroke-width="1.4" marker-end="url(#aSig)"/>
+
+        <!-- 9 -->
+        <rect x="140" y="534" width="290" height="54" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.4"/>
+        <text x="152" y="551" font-family="system-ui, sans-serif" font-size="11.5" font-weight="650" fill="var(--accent)">wait cut short — resume</text>
+        <text x="152" y="566" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">lease re-acquired · epoch 2</text>
+        <text x="152" y="580" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">graph restarts from the checkpoint → commit</text>
+        <text x="100" y="562" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">250 s</text>
+      </svg>
+    </div>
+    <figcaption>The listener appears exactly twice in four minutes, and both times it
+    only sets a flag. Everything else happens on one thread.</figcaption>
+  </figure>
+
+  <h3>Four moments worth pausing on</h3>
+
+  <p><strong>0.01 s — the listener sets <code>wake</code> the moment it connects.</strong>
+  Not because anything happened, but because anything published <em>while it was
+  connecting</em> is gone forever. Waking once on connect turns that hole into one
+  early scan.</p>
+
+  <p><strong>0.40 s — the first 30-second wait returns instantly.</strong> The flag was
+  already set, so <code>wake.wait(30)</code> returns <code>True</code> straight away.
+  This is the whole mechanism: the wait is not a sleep, it is a sleep that can be
+  interrupted.</p>
+
+  <p><strong>30.7 s — the files were skipped twice on purpose.</strong> A file younger
+  than <code>SETTLE_SECONDS</code> might still be copying. Hashing a half-written PDF
+  records a document that never existed. Skipping is free; the next pass is 30 seconds
+  away.</p>
+
+  <p><strong>~240 s — the pause costs zero threads.</strong> This is the part people
+  expect to be wrong. The run stops at the human gate, writes a LangGraph checkpoint
+  to Postgres, <em>releases the lease</em>, and the main thread goes back to its normal
+  loop. Nothing is blocked. The person can take three days, the machine can reboot
+  fifty times, and the run is still exactly where it was.</p>
+
+  <div class="callout">
+    <strong>A naive design would park a thread here</strong> — some worker sitting in
+    <code>approval_event.wait()</code> holding a database connection and a lease. That
+    thread dies with the process, so a restart would lose the pause. Here the pause
+    <em>is</em> a row, so it outlives everything.
+  </div>
+</section>
+
+<section>
+  <h2>Why there is no heartbeat thread</h2>
+
+  <p>The lease has a 90-second TTL, so something has to keep renewing it during a long
+  run. The obvious answer is a background thread ticking every 30 seconds. documents-analyst
+  renews it <strong>inline</strong> instead — before each document in
+  <code>ingest.py</code>, and before each graph node in <code>graph/context.py</code>.</p>
+
+  <p>Here is why, and it is the sharpest threading decision in the project.</p>
+
+  <figure>
+    <div class="plate">
+      <svg viewBox="0 0 780 400" role="img"
+           aria-label="Two timelines compared. On the left, a heartbeat thread keeps renewing the lease every thirty seconds while the main thread is stuck on a hung LLM call, so the pile stays locked forever and no other worker can take over. On the right, documents-analyst renews the lease inline before each unit of work, so a hung call lets the lease expire, another worker takes over with epoch two, and the original worker's late write is rejected because its epoch is stale.">
+        <defs>
+          <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <polygon points="0,1 10,5 0,9" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- LEFT panel -->
+        <rect x="16" y="14" width="356" height="372" rx="4" fill="none" stroke="var(--bad)" stroke-width="1.3"/>
+        <text x="32" y="38" font-family="system-ui, sans-serif" font-size="12.5" font-weight="650" fill="var(--bad)">with a heartbeat thread</text>
+        <text x="32" y="55" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--bad)" opacity=".85">the heartbeat lies</text>
+
+        <g font-family="ui-monospace, Menlo, monospace" font-size="10" fill="currentColor" opacity=".6">
+          <text x="44" y="88">t=100</text><text x="44" y="136">t=130</text>
+          <text x="44" y="166">t=160</text><text x="44" y="196">t=190</text>
+          <text x="44" y="244">t=∞</text>
+        </g>
+        <g font-family="system-ui, sans-serif" font-size="11" fill="currentColor">
+          <text x="100" y="88">main calls the LLM — it hangs</text>
+        </g>
+        <g font-family="system-ui, sans-serif" font-size="11" fill="var(--bad)">
+          <text x="100" y="136">heartbeat: “still alive” → renewed</text>
+          <text x="100" y="166">heartbeat: “still alive” → renewed</text>
+          <text x="100" y="196">heartbeat: “still alive” → renewed</text>
+        </g>
+        <line x1="100" y1="212" x2="356" y2="212" stroke="var(--bad)" stroke-width="1" opacity=".35"/>
+        <text x="100" y="244" font-family="system-ui, sans-serif" font-size="11.5" font-weight="650" fill="var(--bad)">the pile is owned forever</text>
+        <text x="100" y="262" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".75">by a worker doing nothing at all.</text>
+        <text x="100" y="278" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".75">No other worker can ever take it.</text>
+        <text x="100" y="312" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".75">The heartbeat proves the</text>
+        <text x="100" y="328" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".75"><tspan font-weight="650">thread</tspan> is alive — not that any</text>
+        <text x="100" y="344" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".75"><tspan font-weight="650">work</tspan> is happening.</text>
+
+        <!-- RIGHT panel -->
+        <rect x="408" y="14" width="356" height="372" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.4"/>
+        <text x="424" y="38" font-family="system-ui, sans-serif" font-size="12.5" font-weight="650" fill="var(--accent)">renewed inline — documents-analyst</text>
+        <text x="424" y="55" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--accent)" opacity=".85">the renewal is proof of progress</text>
+
+        <g font-family="ui-monospace, Menlo, monospace" font-size="10" fill="currentColor" opacity=".6">
+          <text x="436" y="88">t=100</text><text x="436" y="136">t=190</text>
+          <text x="436" y="166">t=195</text><text x="436" y="214">t=400</text>
+        </g>
+        <g font-family="system-ui, sans-serif" font-size="11" fill="currentColor">
+          <text x="492" y="88">renew (TTL 90 s), then call → hangs</text>
+          <text x="492" y="136">lease expires. Nobody renewed it</text>
+          <text x="492" y="166">worker B takes over — <tspan font-family="ui-monospace, Menlo, monospace" font-size="10">epoch 2</tspan></text>
+          <text x="492" y="214">worker A wakes, tries to write</text>
+        </g>
+        <rect x="492" y="226" width="256" height="40" rx="3" fill="none" stroke="var(--signal)" stroke-width="1.2"/>
+        <text x="502" y="242" font-family="ui-monospace, Menlo, monospace" font-size="9.5" fill="var(--signal)">UPDATE … WHERE lease_epoch = 1</text>
+        <text x="502" y="257" font-family="ui-monospace, Menlo, monospace" font-size="9.5" fill="var(--signal)">→ 0 rows → LostLease → stop</text>
+
+        <line x1="492" y1="284" x2="748" y2="284" stroke="var(--accent)" stroke-width="1" opacity=".35"/>
+        <text x="492" y="312" font-family="system-ui, sans-serif" font-size="11.5" font-weight="650" fill="var(--accent)">the system heals itself</text>
+        <text x="492" y="332" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".75">A stalled worker loses the pile,</text>
+        <text x="492" y="348" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".75">and its late write is refused by</text>
+        <text x="492" y="364" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".75">the row, not by its good manners.</text>
+      </svg>
+    </div>
+    <figcaption>A background renewer keeps authority alive while nothing is happening.
+    Renewing before each bounded unit of work means the renewal only continues while
+    work does.</figcaption>
+  </figure>
+
+  <p>The code says it in one sentence:</p>
+
+<pre><code>def renew_lease(self, fence: Fence) -> None:
+    """Give the next bounded unit of graph work a full lease TTL. Called at
+    work boundaries, not from a background thread — a background renewer could
+    keep authority alive while a model call is stuck, where renewing before a
+    bounded operation lets a genuinely stalled worker be taken over."""</code></pre>
+
+  <p>The general rule, worth stealing: <strong>a liveness signal should be a
+  by-product of progress, not a separate thing that runs on a timer.</strong> The
+  moment they are separate, the signal can keep firing after the progress stops.</p>
+</section>
+
+<section>
+  <h2>What breaks if you remove each piece</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Remove</th><th>What happens</th><th>Severity</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="w">the listener thread</td>
+          <td>Approvals take up to 30 s to be noticed instead of ~1 s. Everything still works</td>
+          <td>latency only</td>
+        </tr>
+        <tr>
+          <td class="w"><code>wake.clear()</code> before the pass</td>
+          <td>A notification arriving <em>during</em> a pass is cleared afterwards and lost. The pile waits a full tick</td>
+          <td>a real bug</td>
+        </tr>
+        <tr>
+          <td class="w">the <code>timeout=1.0</code> on <code>notifies()</code></td>
+          <td>On a quiet system the listener never checks <code>stopped</code>, so it blocks shutdown</td>
+          <td>a real bug</td>
+        </tr>
+        <tr>
+          <td class="w">the settle check</td>
+          <td>Half-copied PDFs get hashed and stored as documents that never existed</td>
+          <td>corrupt data</td>
+        </tr>
+        <tr>
+          <td class="w">epoch fencing</td>
+          <td>A frozen worker wakes after losing its lease and keeps writing over the new owner</td>
+          <td>silent corruption</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Notice the shape: losing the <em>thread</em> costs latency. Losing any of the
+  <em>database</em> mechanisms costs correctness. That is the division the whole design
+  is built on.</p>
+</section>
+
+</div>

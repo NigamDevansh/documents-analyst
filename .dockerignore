@@ -1,0 +1,15 @@
+.git
+.venv
+.probe
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+node_modules
+frontend/dist
+watched
+docs
+*.md
+!README.md
+.env

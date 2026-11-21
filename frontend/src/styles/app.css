@@ -1,0 +1,1264 @@
+@import "./tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: var(--step-0) / 1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+::selection {
+  background: var(--accent-wash);
+}
+
+/* ── shell ──────────────────────────────────────────────────────────── */
+
+.shell {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  height: 100%;
+  overflow: hidden;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--rule);
+  background: var(--paper-sunken);
+  overflow: hidden;
+}
+
+.rail__head {
+  padding: var(--gap-5) var(--gap-4) var(--gap-3);
+}
+
+.wordmark {
+  display: block;
+  font: 600 var(--step-1) / 1.2 var(--serif);
+  letter-spacing: -0.01em;
+}
+
+.wordmark small {
+  display: block;
+  margin-top: 2px;
+  font: var(--step--1) / 1.3 var(--sans);
+  color: var(--ink-faint);
+  letter-spacing: 0.02em;
+}
+
+.rail__label {
+  padding: 0 var(--gap-4);
+  margin: var(--gap-4) 0 var(--gap-2);
+  font-size: 0.688rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.rail__list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 var(--gap-2) var(--gap-4);
+  list-style: none;
+  margin: 0;
+}
+
+.rail__foot {
+  border-top: 1px solid var(--rule);
+  padding: var(--gap-3) var(--gap-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-2);
+  font-size: var(--step--1);
+  color: var(--ink-faint);
+}
+
+/* ── pile button ────────────────────────────────────────────────────── */
+
+.pile {
+  position: relative;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: var(--gap-3);
+  padding: var(--gap-3);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--fast) var(--ease);
+}
+
+.pile:hover {
+  background: color-mix(in oklab, var(--paper-raised) 70%, transparent);
+}
+
+.pile__glow {
+  position: absolute;
+  /* Spanning every track explicitly. An absolutely positioned child of a grid
+   * still resolves against a grid area, and without this it claimed the first
+   * column — so the selected pile's dot and name shifted one track right while
+   * its unselected neighbours did not. A selection highlight that moves the
+   * thing it highlights is worse than no highlight. */
+  grid-area: 1 / 1 / -1 / -1;
+  inset: 0;
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-1);
+  z-index: 0;
+}
+
+/* The selected pile is a location, not merely a hovered row. The warm surface,
+   rail and name colour make it remain obvious after the pointer has left it. */
+.pile--selected .pile__glow {
+  background: var(--accent-wash);
+  box-shadow: inset 3px 0 0 var(--accent), var(--shadow-2);
+}
+
+.pile--selected .pile__name {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.pile--selected .pile__meta {
+  color: var(--ink-soft);
+}
+
+.pile--selected .dot {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 15%, transparent);
+}
+
+.pile > * {
+  position: relative;
+  z-index: 1;
+}
+
+.pile__name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pile__meta {
+  grid-column: 2 / -1;
+  font-size: var(--step--1);
+  color: var(--ink-faint);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.dot--running {
+  background: var(--accent);
+}
+
+.dot--awaiting_review {
+  background: var(--disputed);
+}
+
+.dot--error,
+.dot--parked {
+  background: var(--danger);
+}
+
+.dot--idle {
+  background: var(--rule-strong);
+}
+
+.dot--pulse {
+  animation: pulse 1.8s var(--ease) infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 45%, transparent);
+  }
+  60% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+.tally {
+  min-width: 1.35rem;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--disputed-wash);
+  color: var(--disputed);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── main ───────────────────────────────────────────────────────────── */
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--gap-2) var(--gap-4);
+  padding: var(--gap-4) var(--gap-5) var(--gap-3);
+  border-bottom: 1px solid var(--rule);
+}
+
+.topbar h1 {
+  margin: 0;
+  font: 600 var(--step-2) / 1.15 var(--serif);
+  letter-spacing: -0.015em;
+}
+
+.topbar__spacer {
+  flex: 1;
+}
+
+.stat {
+  font-size: var(--step--1);
+  color: var(--ink-faint);
+}
+
+.stat b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* A missing rulebook is not an error, but it must not look like a clean
+   compliance result. This says both the current state and the one next step. */
+.rulebook-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-2);
+  max-width: 29rem;
+  padding: 5px 9px 5px 6px;
+  border: 1px solid color-mix(in oklab, var(--disputed) 36%, var(--rule));
+  border-radius: var(--radius);
+  background: var(--disputed-wash);
+  color: var(--ink-soft);
+  font-size: var(--step--1);
+  line-height: 1.3;
+}
+
+.rulebook-notice__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 1.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  background: var(--disputed);
+  color: var(--paper-raised);
+  font-weight: 800;
+  font-family: var(--sans);
+}
+
+.rulebook-notice strong,
+.rulebook-notice small {
+  display: block;
+}
+
+.rulebook-notice strong {
+  color: var(--disputed);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.rulebook-notice small {
+  margin-top: 1px;
+  color: var(--ink-soft);
+}
+
+.rulebook-notice code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+/* ── tabs ───────────────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  gap: var(--gap-1);
+  padding: 0 var(--gap-5);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.tab {
+  position: relative;
+  border: 0;
+  background: none;
+  padding: var(--gap-3) var(--gap-3);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: var(--step-0);
+  transition: color var(--fast) var(--ease);
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.tab__rule {
+  position: absolute;
+  left: var(--gap-3);
+  right: var(--gap-3);
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.tab__count {
+  margin-left: 6px;
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── split ──────────────────────────────────────────────────────────── */
+
+.split {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.split__pane {
+  min-width: 0;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+
+.split__handle {
+  flex: 0 0 11px;
+  cursor: col-resize;
+  position: relative;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.split__handle::before {
+  content: "";
+  position: absolute;
+  inset: 0 5px;
+  background: var(--rule);
+  transition: background var(--fast) var(--ease);
+}
+
+.split__handle:hover::before,
+.split__handle[data-dragging="true"]::before {
+  background: var(--accent);
+  inset: 0 4px;
+}
+
+.split__handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 26px;
+  translate: -50% -50%;
+  border-radius: 2px;
+  background: var(--rule-strong);
+  transition: background var(--fast) var(--ease);
+}
+
+.split__handle:hover::after {
+  background: var(--accent);
+}
+
+/* ── register ───────────────────────────────────────────────────────── */
+
+.sheet {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: var(--gap-6) var(--gap-5) 6rem;
+}
+
+.sheet__title {
+  margin: 0 0 var(--gap-1);
+  font: 600 var(--step-3) / 1.1 var(--serif);
+  letter-spacing: -0.02em;
+}
+
+.sheet__caveat {
+  margin: 0 0 var(--gap-5);
+  padding-bottom: var(--gap-5);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-faint);
+  font-size: var(--step--1);
+  max-width: 34rem;
+}
+
+.term {
+  padding: var(--gap-4) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.term__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-3);
+  margin-bottom: var(--gap-2);
+}
+
+.term__label {
+  font: 600 var(--step-0) / 1.3 var(--sans);
+  letter-spacing: 0.01em;
+}
+
+.term__value {
+  font: var(--step-1) / 1.5 var(--serif);
+  margin: 0;
+}
+
+.term__value--muted {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: var(--gap-2);
+  padding: 2px 8px 2px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  color: var(--ink-soft);
+  font-size: var(--step--1);
+  cursor: pointer;
+  transition:
+    border-color var(--fast) var(--ease),
+    color var(--fast) var(--ease),
+    background var(--fast) var(--ease);
+}
+
+.cite:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.cite__file {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.options {
+  display: grid;
+  gap: var(--gap-2);
+  margin-top: var(--gap-3);
+}
+
+.option {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: var(--gap-3);
+  padding: var(--gap-3);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--disputed);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+}
+
+.option__group {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+}
+
+.option__value {
+  font: var(--step-0) / 1.4 var(--serif);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.pill--settled {
+  background: var(--settled-wash);
+  color: var(--settled);
+}
+
+.pill--disputed,
+.pill--contested {
+  background: var(--disputed-wash);
+  color: var(--disputed);
+}
+
+.pill--resolved {
+  background: var(--resolved-wash);
+  color: var(--resolved);
+}
+
+/* No colour of its own, deliberately. The four state colours mean "how well do
+   the sources agree", and a deleted file is not a fifth opinion — giving it a
+   hue would make the register look like it had five states. Ink and an outline
+   say "also true" without competing. */
+.pill--orphaned {
+  background: transparent;
+  color: var(--ink-faint);
+  box-shadow: inset 0 0 0 1px var(--rule-strong);
+}
+
+.term__note {
+  margin-top: 4px;
+  max-width: 58ch;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--ink-faint);
+  border-left: 2px solid var(--rule-strong);
+  padding-left: var(--gap-2);
+}
+
+/* ── source pane ────────────────────────────────────────────────────── */
+
+.source {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-sunken);
+  border-left: 1px solid var(--rule);
+}
+
+.source__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  padding: var(--gap-3) var(--gap-4);
+  border-bottom: 1px solid var(--rule);
+  font-size: var(--step--1);
+  color: var(--ink-soft);
+  background: var(--paper);
+}
+
+.source__file {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink);
+}
+
+.source__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--gap-5);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: var(--step-0) / 1.75 var(--serif);
+  color: var(--ink-soft);
+  tab-size: 2;
+}
+
+mark.span {
+  background: var(--highlight);
+  color: var(--ink);
+  padding: 1px 2px;
+  margin: 0 -2px;
+  border-radius: 3px;
+  box-decoration-break: clone;
+  animation: strike var(--slow) var(--ease-out);
+}
+
+@keyframes strike {
+  from {
+    background: transparent;
+    box-shadow: 0 0 0 6px transparent;
+  }
+  40% {
+    background: var(--highlight-edge);
+    box-shadow: 0 0 0 6px color-mix(in oklab, var(--highlight-edge) 30%, transparent);
+  }
+}
+
+/* ── cards, queue, generic ──────────────────────────────────────────── */
+
+.stack {
+  display: grid;
+  gap: var(--gap-4);
+  padding: var(--gap-5);
+  max-width: 54rem;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.card {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+
+.card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  padding: var(--gap-4);
+  border-bottom: 1px solid var(--rule);
+}
+
+.card__kind {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.card__body {
+  padding: var(--gap-4);
+  display: grid;
+  gap: var(--gap-3);
+}
+
+.quote {
+  margin: 0;
+  padding-left: var(--gap-4);
+  border-left: 2px solid var(--rule-strong);
+  font: var(--step-0) / 1.6 var(--serif);
+  color: var(--ink-soft);
+}
+
+.card__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  padding: var(--gap-3) var(--gap-4);
+  border-top: 1px solid var(--rule);
+  background: var(--paper-sunken);
+}
+
+.choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: var(--gap-3);
+  /* A <button> centres its content, which put every competing value in the
+   * middle of its row and made the list read as a set of headings rather than
+   * options to compare. */
+  text-align: left;
+  padding: var(--gap-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  cursor: pointer;
+  background: var(--paper-raised);
+  transition:
+    border-color var(--fast) var(--ease),
+    background var(--fast) var(--ease);
+}
+
+.choice:hover {
+  border-color: var(--rule-strong);
+}
+
+.choice[data-picked="true"] {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.choice__radio {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid var(--rule-strong);
+  display: grid;
+  place-items: center;
+}
+
+.choice[data-picked="true"] .choice__radio {
+  border-color: var(--accent);
+}
+
+.choice__radio i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: block;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: var(--step--1);
+  font-weight: 500;
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    transform var(--fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--ink-faint);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--ink) 88%, var(--paper));
+}
+
+.btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-soft);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--paper-sunken);
+  border-color: var(--rule);
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* ── cost ───────────────────────────────────────────────────────────── */
+
+.gauge {
+  display: grid;
+  gap: var(--gap-2);
+}
+
+.gauge__bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--paper-sunken);
+  overflow: hidden;
+}
+
+.gauge__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--gap-4);
+}
+
+table.plain {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--step--1);
+}
+
+table.plain th {
+  text-align: left;
+  font-size: 0.688rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 600;
+  padding: 0 var(--gap-3) var(--gap-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+table.plain td {
+  padding: var(--gap-2) var(--gap-3) var(--gap-2) 0;
+  border-bottom: 1px solid var(--rule);
+  font-variant-numeric: tabular-nums;
+}
+
+table.plain td:first-child {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
+/* ── states ─────────────────────────────────────────────────────────── */
+
+.empty {
+  display: grid;
+  place-items: center;
+  gap: var(--gap-2);
+  padding: 5rem var(--gap-5);
+  text-align: center;
+  color: var(--ink-faint);
+}
+
+.empty h3 {
+  margin: 0;
+  font: 500 var(--step-1) / 1.3 var(--serif);
+  color: var(--ink-soft);
+}
+
+.empty p {
+  margin: 0;
+  max-width: 26rem;
+  font-size: var(--step--1);
+}
+
+.skeleton {
+  border-radius: var(--radius);
+  background: linear-gradient(
+    90deg,
+    var(--paper-sunken) 0%,
+    color-mix(in oklab, var(--paper-sunken) 60%, var(--paper-raised)) 50%,
+    var(--paper-sunken) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gap-3);
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--danger-wash);
+  color: var(--danger);
+  font-size: var(--step--1);
+}
+
+/* Setup, not failure. A missing key on a first run is the expected state —
+   red would say something is broken when the honest message is "this part is
+   waiting for you". */
+.banner--setup {
+  border-color: var(--rule);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.banner__line {
+  display: block;
+  margin-top: 0.35rem;
+  font-family: var(--mono);
+  font-size: var(--step--2);
+  color: var(--muted);
+}
+
+.toast {
+  position: fixed;
+  bottom: var(--gap-5);
+  left: 50%;
+  translate: -50% 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  padding: var(--gap-3) var(--gap-4);
+  border-radius: var(--radius-lg);
+  background: var(--ink);
+  color: var(--paper);
+  box-shadow: var(--shadow-3);
+  font-size: var(--step--1);
+  max-width: min(36rem, 90vw);
+}
+
+.toast--bad {
+  background: var(--danger);
+}
+
+/* ── reviewer identity, export, failure banner ───────────────────────── */
+
+.rail__reviewer {
+  padding: var(--gap-2) var(--gap-4) var(--gap-3);
+  border-top: 1px solid var(--rule);
+}
+
+.reviewer {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+}
+
+.reviewer--set {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.reviewer--set:hover .reviewer__name {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.reviewer__label {
+  font-size: var(--step--2);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.reviewer__name {
+  font-family: var(--serif);
+  font-size: var(--step-0);
+  color: var(--ink);
+  border-bottom: 1px dotted var(--rule-strong);
+  align-self: flex-start;
+  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+
+.reviewer__input {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--step--1);
+}
+
+.reviewer__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.reviewer__why {
+  font-size: var(--step--2);
+  color: var(--ink-faint);
+  line-height: 1.4;
+}
+
+.export {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-2);
+  min-width: 0;
+}
+
+.export__note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--step--1);
+  color: var(--ink-faint);
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* This is the action that turns the reviewed register into a hand-off file.
+   It should read as the next step, not another passive header label. */
+.btn--export {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--paper-raised);
+  box-shadow: 0 2px 0 color-mix(in oklab, var(--accent) 76%, var(--ink));
+  font-weight: 650;
+}
+
+.btn--export:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--accent) 82%, var(--ink));
+  background: color-mix(in oklab, var(--accent) 88%, var(--ink));
+}
+
+.btn--export:active:not(:disabled) {
+  box-shadow: none;
+}
+
+.export__mark {
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.export__format {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--paper-raised) 18%, transparent);
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.btn--small {
+  padding: 4px 10px;
+  font-size: var(--step--1);
+}
+
+/* Reached only on the second click of a removal. Red is spent nowhere else in
+   this interface, which is what makes it mean something here. */
+.btn--danger {
+  background: #8c2f2a;
+  border-color: #8c2f2a;
+  color: #fff;
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: #7a2925;
+}
+
+.spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--rule-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A load failure that is still true. Unlike a toast, it stays until a retry
+   clears it, because the screen behind it is still incomplete. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  margin: 0 var(--gap-5) var(--gap-3);
+  padding: var(--gap-2) var(--gap-3);
+  border: 1px solid var(--disputed);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--disputed-wash);
+  color: var(--disputed);
+  font-size: var(--step--1);
+}
+
+.banner span {
+  flex: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2s;
+  }
+}
+
+/* Each contract in the pile, named. Without the boundary, three agreements'
+   terms read as one contract contradicting itself. */
+.agreement + .agreement {
+  margin-top: var(--gap-6);
+}
+
+.agreement__name {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 0 var(--gap-3);
+  padding: var(--gap-2) 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule-strong);
+  font: 600 var(--step-0) / 1.3 var(--sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ── activity: one line, history on demand ──────────────────────────── */
+
+.activity {
+  border-top: 1px solid var(--rule);
+  background: var(--paper-sunken);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.activity__line {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  width: 100%;
+  padding: var(--gap-3) var(--gap-5);
+  border: 0;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+
+.activity__line:disabled {
+  cursor: default;
+  color: var(--ink-faint);
+}
+
+.activity__line:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--paper-raised) 60%, transparent);
+}
+
+.activity__what {
+  font-size: var(--step--1);
+}
+
+.activity__chevron {
+  color: var(--ink-faint);
+  font-size: 0.7rem;
+}
+
+.activity__history {
+  margin: 0;
+  padding: 0 var(--gap-5) var(--gap-4);
+  list-style: none;
+  overflow: hidden;
+}
+
+.activity__history li {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  gap: var(--gap-2) var(--gap-3);
+  padding: 5px 0;
+  border-top: 1px solid var(--rule);
+  font-size: var(--step--1);
+}
+
+.activity__when {
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity__detail {
+  grid-column: 2;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: var(--step--2);
+}
+
+/* ── first run ──────────────────────────────────────────────────────── */
+
+.welcome {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: var(--gap-4);
+  background: color-mix(in oklab, var(--ink) 42%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.welcome__card {
+  width: min(34rem, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: var(--gap-5);
+  border-radius: var(--radius-lg, 10px);
+  background: var(--paper);
+  box-shadow: var(--shadow-2, 0 18px 48px rgb(0 0 0 / 0.24));
+}
+
+.welcome__card h2 {
+  margin: 0 0 var(--gap-2);
+  font: 600 var(--step-2) / 1.2 var(--serif);
+  letter-spacing: -0.015em;
+}
+
+.welcome__lede {
+  margin: 0 0 var(--gap-4);
+  color: var(--ink-soft);
+  font-size: var(--step--1);
+}
+
+.welcome__list {
+  margin: 0 0 var(--gap-5);
+  padding-left: 1.15rem;
+  display: grid;
+  gap: var(--gap-3);
+  font-size: var(--step--1);
+  line-height: 1.55;
+}
+
+.welcome__list b {
+  font-weight: 600;
+}
+
+.welcome__foot {
+  display: flex;
+  justify-content: flex-end;
+}

@@ -1,0 +1,75 @@
+# Workspace root. This is NOT a package — it exists to tie the members
+# together and to hold the tool configuration they all share.
+#
+# See docs/CODE_ARCHITECTURE.md §2.1
+
+[tool.uv.workspace]
+members = ["packages/core", "backend"]
+
+[tool.uv.sources]
+documents-analyst-core = { workspace = true }
+# All Linux architectures use the PyTorch CPU index. It carries both x86_64
+# and aarch64 wheels for our supported torch versions, preventing Linux/arm64
+# from falling through to PyPI and pulling CUDA libraries into a CPU image.
+# macOS continues to resolve its normal platform wheel from PyPI.
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true          # only torch resolves here; everything else uses PyPI
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-PyYAML>=6",
+]
+
+# ── ruff: lint and format, replacing black + isort + flake8 ────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["packages/core/src", "backend/src"]
+# ruff formats Python code fences inside Markdown. The prose docs are
+# hand-wrapped for reading, not for the formatter, so they stay out.
+extend-exclude = ["docs", "fixtures", "**/_portable/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
+ignore = [
+    "E501",    # ruff format owns line length
+    "B008",    # FastAPI Depends() in defaults is the documented idiom
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+# ── mypy: non-strict, packages/core only ──────────────────────────────────
+# Core is the shared surface — a wrong type there propagates into three
+# consumers. Application wiring is less load-bearing.
+[tool.mypy]
+python_version = "3.12"
+files = ["packages/core/src", "backend/src"]
+# Both, not just core. Scoped to `packages/core/src` alone, `make types` was
+# green while three real type errors sat in the worker — the command reported
+# on code it had never opened.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+# ── pytest ────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests", "packages/core/tests", "backend/tests"]
+asyncio_mode = "auto"
+markers = [
+    "db: needs a live Postgres (skipped when DATABASE_URL is unset)",
+    "models: downloads or loads a local ML model",
+    "live: hits a real external API (never runs in CI)",
+]
+filterwarnings = ["error::DeprecationWarning:documents_analyst_core.*"]

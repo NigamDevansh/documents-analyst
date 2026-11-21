@@ -1,0 +1,114 @@
+# Compliance rulebook — Meridian Health Systems vendor pile.
+#
+# A rulebook lives IN the pile folder, so each pile carries its own policy. Drop
+# this folder into `watched/` and the next scan picks it up; edit a rule and the
+# next scan re-reads it. Without a rulebook the audit stage still runs and simply
+# produces no findings.
+#
+# There are two agreements in this pile and they are deliberately different:
+#
+#   Meridian <-> CareBridge Analytics   passes every rule as written
+#   Meridian <-> Northstar Imaging      fails R001, R002 and R010
+#
+# So a first run shows both halves of the auditor: it reports real violations,
+# and it does NOT invent findings against the compliant agreement.
+#
+# R003 is the interesting one. It passes exactly on the boundary today and is
+# broken by an approval — see its rationale.
+#
+# Operators: `check` rules are deterministic SQL over `facts_and_claims` and
+# cannot be talked out of a finding by anything written in a contract. `judge`
+# rules ask a model and must return a verbatim quote or the finding is discarded.
+
+rules:
+  - id: R001
+    title: Every agreement must state a limitation of liability
+    mode: check
+    severity: high
+    assert: exists
+    field: liability_cap_amount
+    rationale: >
+      An agreement with no stated cap leaves exposure unbounded. Absence is the
+      finding, so this is `exists` rather than a comparison. The Northstar
+      teleradiology agreement states no cap at all and fails here.
+
+  - id: R002
+    title: Payment terms must be between 30 and 45 days
+    mode: check
+    severity: medium
+    assert: in
+    field: payment_terms_days
+    values: [30, 45]
+    rationale: >
+      Comparison is on the normalised integer, so "Net 30", "thirty (30) days"
+      and "30 days" are one value. Northstar invoices Net 60 and fails. Note
+      that the CareBridge MSA says Net 30 while its SOW says Net 45 — both are
+      inside the policy, so that disagreement surfaces as a conflict for a human
+      to resolve rather than as a compliance finding.
+
+  - id: R003
+    title: Liability cap must cover at least twelve months of recurring fees
+    mode: check
+    severity: high
+    assert: compare
+    left: liability_cap_amount
+    op: ">="
+    right: "recurring_price * 12"
+    rationale: >
+      The sharpest rule in this pile. As signed, the CareBridge cap of 480,000
+      covers exactly twelve months at 40,000 per month, so it passes on the
+      boundary. Amendment No. 1 raises the monthly fee to 55,000 without
+      touching the cap: 480,000 >= 660,000 is false. The violation is created by
+      approving the amendment, which is what proves the audit re-runs after a
+      commit rather than only at ingest.
+
+  - id: R004
+    title: Every supplier must carry stated insurance cover
+    mode: check
+    severity: medium
+    assert: exists
+    field: insurance_required_amount
+    rationale: >
+      Both suppliers state a figure, so this rule passes twice. It is here on
+      purpose: a rulebook whose every rule fails proves only that rules fire.
+
+  - id: R005
+    title: Termination notice must be a recognised notice period
+    mode: check
+    severity: low
+    assert: in
+    field: termination_notice_days
+    values: [30, 60, 90]
+    rationale: >
+      CareBridge gives sixty days, Northstar thirty. Both are inside policy.
+
+  - id: R010
+    title: Termination rights should be mutual
+    mode: judge
+    severity: medium
+    question: >
+      Does the termination clause give both parties equivalent rights to
+      terminate for convenience?
+    section_hint: termination
+    requires_citation: true
+    rationale: >
+      The one rule here that needs reading rather than arithmetic. Northstar may
+      walk away on thirty days notice for convenience while Meridian may only
+      terminate for uncured material breach — not equivalent. A judge finding
+      must return a quote that survives the verbatim gate or it is discarded and
+      logged, never shown. "Not mentioned" is not a violation.
+
+  - id: R011
+    title: Subprocessor changes must be notified in advance
+    mode: judge
+    severity: medium
+    question: >
+      Does the agreement require the supplier to give the customer advance
+      written notice before appointing a new subprocessor?
+    section_hint: subprocessor
+    requires_citation: true
+    rationale: >
+      The CareBridge DPA gives thirty days notice and should pass. The Northstar
+      agreement is silent on subprocessors, and silence is not a violation — a
+      judge rule that fired on absence would be indistinguishable from one that
+      guessed.

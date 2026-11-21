@@ -1,0 +1,295 @@
+<title>The workspace, and how a claim links to its source</title>
+
+<style>
+  :root {
+    --ground:#fff; --ink:#16181d; --muted:#5b6069; --rule:#e2e5ea; --panel:#f7f8fa;
+    --accent:#1c4f8b; --accent-soft:#edf2f8; --warn:#8a5a00; --warn-soft:#fff4e0;
+    --ok:#1d6b4f; --ok-soft:#e8f3ee;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ground:#111317; --ink:#e7e9ed; --muted:#969ca6; --rule:#262b33;
+            --panel:#171a1f; --accent:#82b1e8; --accent-soft:#1a2330; }
+  }
+  :root[data-theme="dark"] { --ground:#111317; --ink:#e7e9ed; --muted:#969ca6;
+            --rule:#262b33; --panel:#171a1f; --accent:#82b1e8; --accent-soft:#1a2330; }
+  :root[data-theme="light"] { --ground:#fff; --ink:#16181d; --muted:#5b6069;
+            --rule:#e2e5ea; --panel:#f7f8fa; --accent:#1c4f8b; --accent-soft:#edf2f8; }
+
+  body { background:var(--ground); color:var(--ink); font-family:var(--sans);
+         font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:70rem; margin:0 auto; padding:3rem 1.25rem 5rem;
+          display:flex; flex-direction:column; gap:2.75rem; }
+  h1 { font-family:var(--serif); font-size:clamp(1.7rem,4vw,2.3rem); font-weight:500;
+       line-height:1.15; text-wrap:balance; letter-spacing:-.01em; }
+  h2 { font-family:var(--serif); font-size:1.35rem; font-weight:500;
+       padding-bottom:.45rem; border-bottom:1px solid var(--rule); }
+  .sub { color:var(--muted); max-width:62ch; }
+  p { max-width:68ch; } .note { color:var(--muted); font-size:.93rem; max-width:68ch; }
+  section { display:flex; flex-direction:column; gap:1.1rem; }
+  code { font-family:var(--mono); font-size:.85em; background:var(--panel);
+         border:1px solid var(--rule); border-radius:3px; padding:.05em .3em; }
+  table { border-collapse:collapse; width:100%; font-size:.92rem; }
+  th,td { text-align:left; padding:.5rem .8rem .5rem 0; border-bottom:1px solid var(--rule); vertical-align:top; }
+  th { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:650; }
+  .scroll { overflow-x:auto; }
+  .rule-box { background:var(--accent-soft); border-left:2px solid var(--accent);
+              padding:.85rem 1.05rem; font-size:.95rem; max-width:68ch; }
+
+  /* ── the mockup keeps its own light palette: it is a product view ── */
+  .app { --a:#1c4f8b; --a-soft:#edf2f8; --g:#16181d; --m:#666d78; --r:#dfe3e9;
+         background:#fff; color:var(--g); border:1px solid #cfd5dd; border-radius:6px;
+         overflow:hidden; font-size:13px; box-shadow:0 1px 3px rgba(0,0,0,.07); }
+  .bar { display:flex; align-items:center; gap:.65rem; padding:.55rem .8rem;
+         border-bottom:1px solid var(--r); background:#fafbfc; flex-wrap:wrap; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#c98a00; flex:none; }
+  .bar b { font-size:13px; } .bar .sp { flex:1; }
+  .chip { font-family:var(--mono); font-size:10.5px; padding:1px 6px; border-radius:10px;
+          border:1px solid var(--r); color:var(--m); background:#fff; white-space:nowrap; }
+  .stages { display:flex; gap:3px; align-items:center; padding:.4rem .8rem;
+            border-bottom:1px solid var(--r); font-size:10.5px; color:var(--m);
+            font-family:var(--mono); overflow-x:auto; }
+  .st { padding:1px 6px; border-radius:3px; background:#eef0f3; white-space:nowrap; }
+  .st.done { background:#e8f3ee; color:#1d6b4f; } .st.now { background:#edf2f8; color:#1c4f8b; font-weight:700; }
+
+  .panes { display:grid; grid-template-columns:1fr 1fr; min-height:340px; }
+  @media (max-width:760px){ .panes{ grid-template-columns:1fr; } }
+  .pane { padding:.75rem .9rem; }
+  .pane + .pane { border-left:1px solid var(--r); }
+  @media (max-width:760px){ .pane + .pane{ border-left:0; border-top:1px solid var(--r);} }
+  .ph { display:flex; align-items:baseline; gap:.5rem; margin-bottom:.6rem;
+        font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--m); font-weight:650; }
+  .ph .src { font-family:var(--mono); text-transform:none; letter-spacing:0; font-weight:400; }
+
+  .doc h4 { font-size:13.5px; margin:.7rem 0 .25rem; font-weight:650; }
+  .doc h4:first-child { margin-top:0; }
+  .doc p { font-size:12.5px; margin:0 0 .35rem; color:#31363d; max-width:none; }
+  .field { display:flex; gap:.5rem; padding:.28rem .4rem; border-radius:3px; cursor:pointer;
+           align-items:baseline; border:1px solid transparent; }
+  .field:hover { background:#f4f7fb; border-color:#dde5f0; }
+  .field .k { color:var(--m); min-width:9.5em; font-size:12px; }
+  .field .v { font-weight:600; font-size:12.5px; }
+  .field.sel { background:#e4edf9; border-color:var(--a); }
+  .badge { font-size:9.5px; font-family:var(--mono); padding:0 5px; border-radius:8px;
+           border:1px solid; text-transform:uppercase; letter-spacing:.04em; }
+  .b-dis { color:#8a5a00; border-color:#d8b169; background:#fff4e0; }
+  .b-set { color:#1d6b4f; border-color:#9dc9b4; background:#e8f3ee; }
+  .cid { font-family:var(--mono); font-size:9.5px; color:#98a0ab; margin-left:auto; }
+
+  .srcdoc { font-family:var(--mono); font-size:11.5px; line-height:1.75; color:#3a4048;
+            background:#fbfcfd; border:1px solid var(--r); border-radius:4px; padding:.65rem .75rem; }
+  mark { background:#ffe89a; color:#16181d; padding:1px 2px; border-radius:2px;
+         box-shadow:0 0 0 1px #d8b169; }
+  .off { font-family:var(--mono); font-size:10px; color:var(--m); margin-top:.5rem; }
+
+  .queue { border-top:1px solid var(--r); background:#fafbfc; padding:.6rem .8rem; }
+  .qi { display:flex; gap:.5rem; align-items:center; font-size:12px; padding:.35rem 0; flex-wrap:wrap; }
+  .btn { font-size:11px; padding:2px 9px; border-radius:3px; border:1px solid var(--r);
+         background:#fff; color:var(--g); cursor:pointer; }
+  .btn.pri { background:var(--a); border-color:var(--a); color:#fff; }
+  .cap { font-size:.85rem; color:var(--muted); }
+
+  .diagram { background:#fff; border:1px solid var(--rule); border-radius:4px;
+             padding:1.1rem; overflow-x:auto; }
+  .diagram pre.mermaid { min-width:min-content; }
+</style>
+
+<div class="wrap">
+
+<header style="display:flex;flex-direction:column;gap:.55rem">
+  <h1>The workspace, and how a claim finds its source</h1>
+  <p class="sub">What the UI looks like, and the exact chain that turns
+  a click in the register into a highlighted sentence in the contract.</p>
+</header>
+
+<section>
+  <h2>1 · What changed, and why the UI got simpler</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Was going to be</th><th>Is now</th><th>Because</th></tr></thead>
+      <tbody>
+        <tr><td>An embedded third-party editor</td><td>Our own render of the register, read-only</td><td>Same origin, our DOM — there is no boundary to work around</td></tr>
+        <tr><td>A <b>Document / Citations</b> toggle</td><td><b>One pane.</b> Toggle deleted</td><td>It only existed to route around a cross-origin boundary that no longer exists</td></tr>
+        <tr><td>Click-a-claim: impossible</td><td><b>Works</b></td><td>Same origin, our DOM, our click handler</td></tr>
+        <tr><td>Rename by typing in the document</td><td>A <code>label_change</code> review item, applied at commit</td><td>Sections are keyed by slot id, so a renamed heading is an edit of the same section, not a removal plus an addition</td></tr>
+        <tr><td>An export button that queued a job</td><td>A plain download link for <code>final-document.docx</code></td><td>The worker writes the file after review, into the pile's own folder — there is nothing to request and nothing to wait for</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>2 · The workspace</h2>
+
+  <div class="app">
+    <div class="bar">
+      <span class="dot"></span>
+      <b>Acme Corporation</b>
+      <span class="chip">7 documents</span>
+      <span class="chip">2 agreements</span>
+      <span class="sp"></span>
+      <span class="chip">LLM $0.34</span>
+      <span class="chip">↓ final-document.docx · v3</span>
+    </div>
+
+    <div class="stages">
+      <span class="st done">resolve</span>›<span class="st done">ingest</span>›<span class="st done">extract</span>›<span class="st done">ground</span>›<span class="st done">match</span>›<span class="st done">classify</span>›<span class="st done">audit</span>›<span class="st now">human_gate</span>›<span class="st">commit</span>›<span class="st">reconcile</span>
+    </div>
+
+    <div class="panes">
+      <div class="pane doc">
+        <div class="ph">Contract register <span class="src">— our render, read-only</span></div>
+
+        <h4>Acme Corporation &amp; Beta Logistics LLC</h4>
+        <p>Master Services Agreement, effective 1 January 2025. Two source documents, one amendment.</p>
+
+        <h4>Commercial terms</h4>
+        <div class="field"><span class="k">Monthly price</span>
+          <span class="v">$10,000 / $12,000</span>
+          <span class="badge b-dis">disputed</span>
+          <span class="cid">sha 3f9a1c</span></div>
+        <div class="field sel"><span class="k">Payment terms</span>
+          <span class="v">Net 30</span>
+          <span class="badge b-set">settled</span>
+          <span class="cid">sha 81be07</span></div>
+        <div class="field"><span class="k">Liability cap</span>
+          <span class="v">$120,000</span>
+          <span class="badge b-set">settled</span>
+          <span class="cid">sha c2d455</span></div>
+
+        <h4>Term</h4>
+        <div class="field"><span class="k">Expiry date</span>
+          <span class="v">31 December 2027</span>
+          <span class="badge b-set">settled</span>
+          <span class="cid">sha 06e9fa</span></div>
+
+        <p style="margin-top:.7rem;color:#7a8089;font-size:11.5px">Generated and kept up to date from the
+        source documents in this folder. Changes are applied only after human review.</p>
+      </div>
+
+      <div class="pane">
+        <div class="ph">Source <span class="src">conflict_pile/01_msa.docx · §6</span></div>
+        <div class="srcdoc">Customer shall pay all fees as set forth in applicable
+Statements of Work. All fees are due <mark>Net 30</mark>. Late
+payments are subject to a service charge not to exceed
+the maximum rate permitted by applicable law. Customer
+shall not withhold payment pending resolution of
+good-faith disputes.</div>
+        <div class="off">document 8f21c4 · chars 1204–1211 · verbatim ✓</div>
+      </div>
+    </div>
+
+    <div class="queue">
+      <div class="ph" style="margin-bottom:.35rem">Review queue — 2 open</div>
+      <div class="qi">
+        <span class="badge b-dis">conflict</span>
+        <span><b>Monthly price</b> — $10,000 (MSA §6) vs $12,000 (Amendment §3)</span>
+        <span class="sp" style="flex:1"></span>
+        <button class="btn pri">Use $12,000</button><button class="btn">Use $10,000</button>
+      </div>
+      <div class="qi">
+        <span class="badge b-set">amendment</span>
+        <span><b>Expiry date</b> → 31 Dec 2027 — supersedes MSA §2</span>
+        <span class="sp" style="flex:1"></span>
+        <button class="btn pri">Accept</button><button class="btn">Reject</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="cap">Two panes, not three. Clicking <b>Payment terms</b> on the left highlighted
+  <code>Net 30</code> on the right — that is the interaction the system exists for: exact provenance.</p>
+</section>
+
+<section>
+  <h2>3 · How the link actually works</h2>
+  <p>The chain runs from a row in the register to a character range in the extracted text.
+  Four hops, all of them ours:</p>
+
+  <div class="diagram">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'background':'#ffffff','primaryColor':'#eef3f9','primaryTextColor':'#16181d','primaryBorderColor':'#1c4f8b','lineColor':'#5b6069','secondaryColor':'#f4f4f4','tertiaryColor':'#ffffff','textColor':'#16181d','edgeLabelBackground':'#ffffff','fontFamily':'system-ui, sans-serif'}}}%%
+flowchart TD
+  A["<b>1 · You click a field</b><br/>the row carries its slot_id"]
+  B["<b>2 · GET /piles/{id}/citations</b><br/>rows for that slot_id<br/>→ field_key, value, document_id"]
+  C["<b>3 · facts_and_claims</b><br/>→ source_document_id, char_start,<br/>char_end, source_quote"]
+  D["<b>4 · documents.extracted_text</b><br/>slice [1204:1211] → 'Net 30'"]
+  E["<b>Gate 1 re-checked in the browser</b><br/>slice == source_quote ?"]
+  F["highlight the span"]
+  G["show 'citation could not be resolved'<br/><i>never a silent wrong highlight</i>"]
+
+  A --> B --> C --> D --> E
+  E -->|match| F
+  E -->|mismatch| G
+
+  style A fill:#eef3f9,stroke:#1c4f8b,color:#16181d
+  style B fill:#ffffff,stroke:#5b6069,color:#16181d
+  style C fill:#ffffff,stroke:#5b6069,color:#16181d
+  style D fill:#ffffff,stroke:#5b6069,color:#16181d
+  style E fill:#fff4e0,stroke:#8a5a00,color:#16181d
+  style F fill:#e8f3ee,stroke:#1d6b4f,color:#16181d
+  style G fill:#f4f4f4,stroke:#999999,color:#16181d
+</pre>
+  </div>
+
+  <div class="rule-box">
+    <b>Step 4 is the one that matters.</b> Offsets index into
+    <code>documents.extracted_text</code>, which is <b>written once and never edited</b>. If we
+    ever patched that string, every stored citation would shift by the length of the edit and
+    quietly point at the wrong words. That single rule is what makes the highlight trustworthy.
+  </div>
+
+  <p class="note">Step 5 re-runs the verbatim check client-side. It should never fail — Gate 1
+  already dropped anything that didn't match at write time — so a failure means a real bug, and
+  it surfaces as a visible message rather than a confident highlight of the wrong sentence.</p>
+</section>
+
+<section>
+  <h2>4 · Where each piece comes from</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>On screen</th><th>Source</th><th>Cost</th></tr></thead>
+      <tbody>
+        <tr><td>Register content and layout</td><td><code>claim_slots</code>, via <code>GET /piles/{id}/deliverable</code></td><td>ours</td></tr>
+        <tr><td>Slot state — settled / disputed</td><td><code>claim_slots.state</code></td><td>ours</td></tr>
+        <tr><td>Source pane text</td><td><code>documents.extracted_text</code></td><td>ours, write-once</td></tr>
+        <tr><td>The highlight offsets</td><td><code>facts_and_claims.char_start/end</code></td><td>ours</td></tr>
+        <tr><td>Live pipeline bar</td><td><code>stage_events</code> over SSE</td><td>ours</td></tr>
+        <tr><td>Cost chips</td><td><code>stage_runs</code></td><td>ours</td></tr>
+        <tr><td>The download link</td><td><code>watched/&lt;pile&gt;/final-document.docx</code>, via <code>GET …/deliverable/document</code></td><td>ours, local</td></tr>
+        <tr><td>"Does the file say what we recorded?"</td><td>the <code>.docx</code> read back against <code>piles.deliverable_sections</code> (<code>GET …/deliverable/verify</code>)</td><td>ours, local</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Everything on screen — register, click, highlight, state, cost — is served
+  from our own database, and the final document from the pile's own folder. Nothing on this
+  page depends on an outside service, so it stays responsive while a run is paused at the
+  gate.</p>
+</section>
+
+<section>
+  <h2>5 · Renaming a field</h2>
+  <p>Renames stay possible; like every change to the document, they go through review.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Step</th><th>What happens</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>A <code>label_change</code> review item proposes <b>Monthly price</b> → <b>Monthly Fee</b></td></tr>
+        <tr><td>2</td><td>It is approved in the review queue, like any other change</td></tr>
+        <tr><td>3</td><td><code>Commit</code> re-renders that one section under the new heading — same slot id, so one <code>edit</code> row in <code>deliverable_versions</code> with reason <code>label_change</code>, and every other section's SHA-256 unchanged</td></tr>
+        <tr><td>4</td><td><code>claim_slots.label_override</code> is written in the <b>same transaction</b> as the file and its <code>deliverable_commits</code> row</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="rule-box">
+    <b>Step 4 is easy to forget, and skipping it breaks the rename silently.</b> Register content
+    is generated from the taxonomy, so without <code>label_override</code> the next update would
+    re-render the field under its taxonomy name and quietly undo your rename.
+  </div>
+  <p class="note">Cost: one local file write. What matters is that the register and the document
+  never disagree about what a field is called — and <code>deliverable_commits</code> makes sure
+  the rename is applied exactly once.</p>
+</section>
+
+</div>

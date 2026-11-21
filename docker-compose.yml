@@ -1,0 +1,194 @@
+# `docker compose up -d db` starts the local-development database.
+# `docker compose --profile full up --build` runs the complete container stack.
+#
+# The application services are opt-in so local development gets hot reload and
+# debugger support without giving up the real pgvector database.
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: analyst
+      POSTGRES_PASSWORD: analyst
+      POSTGRES_DB: documents_analyst
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # A worker frozen mid-transaction otherwise holds row locks and blocks the
+    # very takeover the lease exists to allow.
+    command: >
+      postgres
+      -c idle_in_transaction_session_timeout=60s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analyst -d documents_analyst"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # One-shot. Runs once, exits 0, and everything else waits for that.
+  # Not run from the API on startup: with more than one worker or a restart
+  # loop, two processes race the same DDL. This makes "the schema is ready" a
+  # fact the others can depend on rather than something each hopes it won.
+  migrate:
+    profiles: ["full"]
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://analyst:analyst@db:5432/documents_analyst
+    command: ["python", "-m", "documents_analyst.db.migrate"]
+    restart: "no"
+
+  api:
+    profiles: ["full"]
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      # Optional: the app starts without it and names what is missing.
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://analyst:analyst@db:5432/documents_analyst
+      WATCH_ROOT: /data/watched
+      WATCH_DIR_HOST: ${WATCH_DIR:-./watched}
+      STATIC_DIR: /app/static
+    ports:
+      - "8000:8000"
+    volumes:
+      # WATCH_DIR in .env picks the host folder (default ./watched in this repo).
+      - ${WATCH_DIR:-./watched}:/data/watched   # sources in; final-document.docx written per pile
+    command:
+      - uvicorn
+      - documents_analyst.api.main:create_app
+      - --factory
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+
+  # Discovers piles under WATCH_ROOT and runs the graph over them.
+  #
+  # It needs the same `watched` mount and the same `.env` as the API, and for
+  # three phases it had neither: `make full-up` started a worker that watched an
+  # empty directory it could not see into and had no LLM key to extract with.
+  # Nothing errored — the whole failure was a scan that found no piles, which is
+  # indistinguishable from a folder with no piles in it.
+  worker:
+    profiles: ["full"]
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      # Optional: without a key the worker still scans, ingests and quarantines.
+      # Only extraction needs one, and the missing capability is named on start.
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://analyst:analyst@db:5432/documents_analyst
+      WATCH_ROOT: /data/watched
+      WATCH_DIR_HOST: ${WATCH_DIR:-./watched}
+    volumes:
+      # WATCH_DIR in .env picks the host folder (default ./watched in this repo).
+      - ${WATCH_DIR:-./watched}:/data/watched   # sources in; final-document.docx written per pile
+    command: ["python", "-m", "documents_analyst.worker.main"]
+
+  # The MCP server on **stdio** — this is the one `claude mcp add` runs.
+  #
+  #   claude mcp add documents-analyst -- docker compose run --rm -T mcp
+  #
+  # `--transport stdio` is passed explicitly rather than left to `MCP_TRANSPORT`,
+  # because a `.env` that sets it for the HTTP service would otherwise hand the
+  # client an HTTP listener where it expects a process speaking JSON-RPC on
+  # stdout — which fails as a hang, not an error. The command says what this
+  # service is.
+  #
+  # `depends_on: api` rather than `db`, and that is the whole point: this
+  # service has no database credentials and no reason to want any. Machine
+  # callers passing through the same gates as the browser is then structural,
+  # not a convention somebody has to keep.
+  mcp:
+    profiles: ["mcp"]
+    build: .
+    depends_on:
+      api:
+        condition: service_started
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MCP_API_BASE_URL: http://api:8000
+      # What a *host-side* client can reach. `api:8000` resolves only inside
+      # this network, so a download URL built from it is one the caller cannot
+      # follow.
+      PUBLIC_API_BASE_URL: http://localhost:8000
+    stdin_open: true
+    tty: false
+    command: ["python", "-m", "documents_analyst.mcp.server", "--transport", "stdio"]
+
+  # The same server over HTTP, for hosts that want one always-on.
+  #
+  # Published to **127.0.0.1 only**. This process holds `API_TOKEN` and spends
+  # it downstream, so an open port here approves register changes using our
+  # credential without presenting one — and if `API_TOKEN` is set with no
+  # `MCP_TOKEN`, the server refuses to start rather than becoming that hole.
+  # `MCP_HOST=0.0.0.0` binds inside the container's own namespace; the mapping
+  # below is what decides who can reach it.
+  mcp-http:
+    profiles: ["mcp-http"]
+    build: .
+    depends_on:
+      api:
+        condition: service_started
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MCP_API_BASE_URL: http://api:8000
+      PUBLIC_API_BASE_URL: http://localhost:8000
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8765
+    ports:
+      - "127.0.0.1:8765:8765"
+    command: ["python", "-m", "documents_analyst.mcp.server", "--transport", "streamable-http"]
+
+  # The suite, and pointedly WITHOUT `env_file`.
+  #
+  # `make test` used to run in the `worker` service, which loads `.env` — and
+  # compose exports those into the container as real environment variables,
+  # where they beat the `_env_file=` a test passes explicitly. So a developer
+  # who had pinned `LLM_MODEL_EXTRACT` watched three tests fail that assert the
+  # *default* model, and CI (which has no `.env`) passed. The suite was reading
+  # one machine's configuration and calling it behaviour.
+  #
+  # Same shape as the credential fix in `tests/conftest.py`: the offline,
+  # config-free guarantee has to be a property of how the suite is run, not a
+  # habit of whoever ran it. This service is what CI runs, so `make test`
+  # reproduces CI rather than approximating it.
+  tests:
+    profiles: ["full"]
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql+psycopg://analyst:analyst@db:5432/documents_analyst
+      WATCH_ROOT: /data/watched
+    command: ["pytest"]
+
+  pgweb:
+    image: sosedoff/pgweb
+    restart: on-failure
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://analyst:analyst@db:5432/documents_analyst?sslmode=disable
+    ports:
+      - "8081:8081"
+
+volumes:
+  pgdata:

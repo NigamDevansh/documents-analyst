@@ -1,0 +1,32 @@
+# ── os / editors ──────────────────────────────────────────────────────────
+.DS_Store
+.vscode
+.idea
+
+# ── python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# uv.lock is COMMITTED on purpose — it is the reproducibility guarantee.
+# `uv sync --frozen` in the Dockerfile means a reviewer builds what we built.
+
+# ── node ──────────────────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+
+# ── local runtime state ───────────────────────────────────────────────────
+.env
+watched/
+models/
+
+# probe scratch output (regenerable)
+.probe/
+.cache/

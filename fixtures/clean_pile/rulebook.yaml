@@ -1,0 +1,47 @@
+# Same policy as conflict_pile, deliberately.
+#
+# `ANSWER_KEY.json` asserts `clean_pile.expected_findings == []`, and that
+# assertion is only meaningful if the rules were actually capable of firing.
+# A clean pile audited against an empty rulebook proves nothing; a clean pile
+# audited against these four rules proves the auditor does not invent findings.
+#
+# The clean corpus is built to pass each one exactly:
+#   R001  liability cap is stated
+#   R002  payment terms are Net 30, inside [30, 45]
+#   R003  cap 240,000 >= 20,000 x 12 = 240,000 — passes on the boundary
+#   R010  termination rights are mutual
+
+rules:
+  - id: R001
+    title: Every agreement must state a liability cap
+    mode: check
+    severity: high
+    assert: exists
+    field: liability_cap_amount
+
+  - id: R002
+    title: Payment terms must be between 30 and 45 days
+    mode: check
+    severity: medium
+    assert: in
+    field: payment_terms_days
+    values: [30, 45]
+
+  - id: R003
+    title: Liability cap must cover at least 12 months of fees
+    mode: check
+    severity: high
+    assert: compare
+    left: liability_cap_amount
+    op: ">="
+    right: "recurring_price * 12"
+
+  - id: R010
+    title: Termination rights should be mutual
+    mode: judge
+    severity: medium
+    question: >
+      Does the termination clause give both parties equivalent rights to
+      terminate for convenience?
+    section_hint: termination
+    requires_citation: true
