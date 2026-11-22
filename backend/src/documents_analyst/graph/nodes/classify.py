@@ -96,12 +96,11 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
                     conn, fence, [str(f["id"]) for g in groups for f in g], "competing"
                 )
 
-                # An amendment verdict only means something for two groups: the
-                # ladder compares groups[0] and [1], so on a three-way "B
-                # supersedes A" answers two of three values, and the batch lane
-                # would supersede a third nobody looked at. Downgraded to a
-                # conflict, which asks.
-                partial = verdict.kind == "amendment" and len(groups) > 2
+                # An amendment over three or more values counts only when `_chain`
+                # checked every step. Anything else answered two of the values, and
+                # the batch lane would supersede one nobody looked at — downgraded to
+                # a conflict, which asks.
+                partial = verdict.kind == "amendment" and len(groups) > 2 and not verdict.chain
                 kind = "conflict" if partial or verdict.kind != "amendment" else "amendment"
                 reason = verdict.reason
                 if partial:
@@ -133,7 +132,7 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
                     # it a contested slot has nothing in the queue to answer it.
                     reopen=slot["state"] == "resolved",
                 )
-            if verdict.kind == "amendment" and len(groups) == 2:
+            if verdict.kind == "amendment" and (len(groups) == 2 or verdict.chain):
                 amendments += 1
             else:
                 conflicts += 1
@@ -156,7 +155,15 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
 
 
 class _Verdict:
-    __slots__ = ("detected_by", "evidence", "kind", "reason", "relationship", "winner_group")
+    __slots__ = (
+        "chain",
+        "detected_by",
+        "evidence",
+        "kind",
+        "reason",
+        "relationship",
+        "winner_group",
+    )
 
     def __init__(
         self,
@@ -167,7 +174,11 @@ class _Verdict:
         evidence: str | None = None,
         winner_group: int | None = None,
         relationship: str | None = None,
+        chain: bool = False,
     ) -> None:
+        self.chain = chain
+        """Set by `_chain`: every neighbouring pair of 3+ values was a verified
+        amendment, so the verdict covers the whole slot, not two of its values."""
         self.kind = kind
         self.detected_by = detected_by
         self.reason = reason
@@ -208,12 +219,17 @@ def _adjudicate(
             ),
         )
 
+    # Three or more values: never settled from a pair. Either every step is a verified
+    # amendment of the one before (A → B → C, the latest wins), or a person chooses.
+    if len(groups) > 2:
+        return _chain(ctx, fence, slot, groups)
+
     # ── tier 1 ────────────────────────────────────────────────────────────
     if _both_scalar(left, right):
         # Already known to differ — `_by_value` grouped on the normalised value,
         # so two groups means two different numbers. Asking a model would be
         # paying for an opinion about arithmetic.
-        return _amendment_or_conflict(ctx, fence, slot, left, right, detected_by="rule")
+        return _amendment_across(ctx, fence, slot, groups[0], groups[1], detected_by="rule")
 
     # ── tier 2 ────────────────────────────────────────────────────────────
     nli = getattr(ctx.models, "nli", None)
@@ -232,7 +248,70 @@ def _adjudicate(
                 )
 
     # ── tier 3 ────────────────────────────────────────────────────────────
-    return _amendment_or_conflict(ctx, fence, slot, left, right, detected_by="llm")
+    return _amendment_across(ctx, fence, slot, groups[0], groups[1], detected_by="llm")
+
+
+def _chain(
+    ctx: RunContext, fence: Fence, slot: dict[str, Any], groups: list[list[dict[str, Any]]]
+) -> _Verdict:
+    """Three or more values as an amendment chain, or a conflict.
+
+    Groups are put in arrival order (when each value first entered the pile) and every
+    neighbouring pair goes through the same check as two values: the judge must call it
+    an amendment AND quote the replacing language verbatim from the later document. Only
+    if every step passes is it an amendment, settling on the last value; one failed step,
+    or an older value turning up again in a later document, makes it a conflict.
+
+    Every pair is checked, not just the first two — the bug this replaced settled a whole
+    slot from one comparison and silently dropped the third value.
+    """
+
+    def last(group: list[dict[str, Any]]) -> Any:
+        return max(fact["document_created_at"] for fact in group)
+
+    first = _arrival
+    ordered = sorted(groups, key=first)
+    detected_by = "rule" if all(_both_scalar(g[0], g[0]) for g in ordered) else "llm"
+    labels = " → ".join(
+        f"{_side(g[0]).get('value_text') or g[0].get('source_quote')} ({g[0].get('filename')})"
+        for g in ordered
+    )
+
+    for earlier, later in zip(ordered, ordered[1:], strict=False):
+        if last(earlier) > first(later):
+            return _Verdict(
+                "conflict",
+                detected_by="rule",
+                reason=(
+                    f"{len(groups)} values ({labels}), and an older value appears again in a "
+                    "later document, so the latest is not clearly the one that applies"
+                ),
+            )
+
+    steps: list[_Verdict] = []
+    for earlier, later in zip(ordered, ordered[1:], strict=False):
+        step = _amendment_across(ctx, fence, slot, earlier, later, detected_by=detected_by)
+        later_group = int(later[0].get("value_group") or 0)
+        if step.kind != "amendment" or step.winner_group != later_group:
+            return _Verdict(
+                "conflict",
+                detected_by=detected_by,
+                reason=(
+                    f"{len(groups)} values ({labels}); {later[0].get('filename')} does not "
+                    f"clearly replace {earlier[0].get('filename')}"
+                    + (f": {step.reason}" if step.reason else "")
+                ),
+            )
+        steps.append(step)
+
+    return _Verdict(
+        "amendment",
+        detected_by=detected_by,
+        reason=f"Each later document replaces the one before: {labels}. {steps[-1].reason}".strip(),
+        evidence=steps[-1].evidence,
+        winner_group=int(ordered[-1][0].get("value_group") or 0),
+        chain=True,
+    )
 
 
 def _same_passage(ctx: RunContext, groups: list[list[dict[str, Any]]]) -> bool:
@@ -272,6 +351,62 @@ def _both_scalar(left: dict[str, Any], right: dict[str, Any]) -> bool:
     )
 
 
+NEVER_AMENDED = frozenset({"effective_date"})
+"""Fields an `amendment` verdict is never taken for. Every later document has its
+own effective date, so two different ones are the normal case, not a replacement."""
+
+AMENDMENT_CANDIDATES = 3
+"""How many documents stating the later value are shown to the judge, newest first,
+before it is called a conflict. Bounds the extra judge calls per disputed field."""
+
+
+def _arrival(group: list[dict[str, Any]]) -> Any:
+    """When a value first entered the pile: its earliest document's arrival."""
+    return min(fact["document_created_at"] for fact in group)
+
+
+def _amendment_across(
+    ctx: RunContext,
+    fence: Fence,
+    slot: dict[str, Any],
+    first: list[dict[str, Any]],
+    second: list[dict[str, Any]],
+    *,
+    detected_by: str,
+) -> _Verdict:
+    """Is the later value an amendment of the earlier one — asked of each document that
+    states it, not just the first.
+
+    A value group can be stated by several documents. Showing the judge only the
+    earliest one asked the wrong question: on the demo pile USD 12,000 appears first in
+    an invoice and then in the amendment that replaces the fee, so the judge was asked
+    whether the INVOICE replaced the SOW's price, correctly said no, and never saw the
+    amendment's wording. Now each document stating the later value is tried, newest
+    first (amendments tend to arrive last), up to `AMENDMENT_CANDIDATES`, and the first
+    verified amendment wins. With none, the newest document's verdict stands.
+    """
+    earlier, later = (first, second) if _arrival(first) <= _arrival(second) else (second, first)
+    original = min(earlier, key=lambda fact: fact["document_created_at"])
+    seen: set[str] = set()
+    candidates: list[dict[str, Any]] = []
+    for fact in sorted(later, key=lambda f: f["document_created_at"], reverse=True):
+        document = str(fact["source_document_id"])
+        if document not in seen:
+            seen.add(document)
+            candidates.append(fact)
+    verdicts: list[_Verdict] = []
+    for candidate in candidates[:AMENDMENT_CANDIDATES]:
+        # The candidate is passed first so a tie in arrival (one document stating both
+        # values) still treats it as the later side.
+        verdict = _amendment_or_conflict(
+            ctx, fence, slot, candidate, original, detected_by=detected_by
+        )
+        if verdict.kind == "amendment":
+            return verdict
+        verdicts.append(verdict)
+    return verdicts[0]
+
+
 def _amendment_or_conflict(
     ctx: RunContext,
     fence: Fence,
@@ -291,14 +426,21 @@ def _amendment_or_conflict(
     later, earlier = _order(left, right)
     ctx.renew_lease(fence)
     try:
+        # Each side carries the paragraph its quote sits in. The fact's own quote is
+        # the value ("the monthly fee shall be USD 12,000"); the words that make it an
+        # amendment ("Section 4.2 ... is hereby deleted ... and replaced with") are
+        # usually just before it. Shown only the quote, the judge recognised the
+        # amendment and then invented the evidence, which the verbatim gate discarded.
+        earlier_context = _paragraph(ctx, earlier)
+        later_context = _paragraph(ctx, later)
         system, user = adjudication_prompt.build(
             str(slot["field_key"]),
-            _side(earlier),
-            _side(later),
+            _side(earlier, earlier_context[0]),
+            _side(later, later_context[0]),
             doc_relationship=_relationship_line(earlier, later),
         )
         with timed() as elapsed:
-            payload, usage = ctx.llm.structured(
+            payload, usage = ctx.judge.structured(
                 system=system, user=user, schema=adjudication_schema(), max_tokens=600
             )
         ctx.record("classify", usage, latency_ms=elapsed())
@@ -317,7 +459,24 @@ def _amendment_or_conflict(
             "agree" if verdict == "agree" else "conflict", detected_by=detected_by, reason=reason
         )
 
-    verified = _verify_in_document(ctx, str(later["source_document_id"]), quote)
+    if str(slot.get("field_key")) in NEVER_AMENDED:
+        # An amendment, side letter or SOW has its own start date. Extracted under the
+        # agreement's `effective_date`, it reads as a change to it, and the judge
+        # accepted a general "supersedes conflicting terms" clause as proof even when
+        # told not to. Enforced here rather than trusted to the prompt: a person
+        # chooses which date the register shows.
+        return _Verdict(
+            "conflict",
+            detected_by=detected_by,
+            reason=(
+                f"{later.get('filename')} states its own effective date; a document's "
+                "start date does not change the agreement's — choose which one the "
+                "register shows"
+            ),
+        )
+    verified = _verify_in_document(
+        ctx, str(later["source_document_id"]), quote, within=later_context[0]
+    )
     if not verified:
         LOG.info(
             "slot %s: amendment claimed but its evidence is not verbatim in %s — treating as "
@@ -354,12 +513,49 @@ def _relationship_line(earlier: dict[str, Any], later: dict[str, Any]) -> str:
     return f"SIDE_B ({later['filename']}) entered the pile after SIDE_A ({earlier['filename']})"
 
 
-def _verify_in_document(ctx: RunContext, document_id: str, quote: str) -> bool:
+CONTEXT_CHARS = 1000
+"""The most of a paragraph shown to the judge per side. A clause long enough to
+exceed this is cut to a window centred on the quote."""
+
+
+def _paragraph(ctx: RunContext, fact: dict[str, Any]) -> tuple[str, int]:
+    """The paragraph around a fact's quote, and where it starts in the document.
+
+    Bounded by blank lines, as `_same_passage` defines a paragraph, and capped at
+    `CONTEXT_CHARS`. Taken from the stored extracted text by the fact's own offsets,
+    so it is exactly what the document says — it is quoted to the judge, and the
+    judge's evidence is checked against it."""
+    with ctx.engine.begin() as conn:
+        row = conn.execute(
+            sql("SELECT extracted_text FROM documents WHERE id = :id"),
+            {"id": str(fact["source_document_id"])},
+        ).first()
+    body = (row.extracted_text if row is not None else "") or ""
+    start, end = int(fact.get("char_start") or 0), int(fact.get("char_end") or 0)
+    if not body or end <= start:
+        return "", 0
+    breaks = list(_PARAGRAPH_BREAK.finditer(body))
+    begin = max((b.end() for b in breaks if b.end() <= start), default=0)
+    finish = min((b.start() for b in breaks if b.start() >= end), default=len(body))
+    if finish - begin > CONTEXT_CHARS:
+        spare = max(CONTEXT_CHARS - (end - start), 0) // 2
+        begin = max(begin, start - spare)
+        finish = min(finish, end + spare)
+    return body[begin:finish].strip(), begin
+
+
+def _verify_in_document(ctx: RunContext, document_id: str, quote: str, *, within: str = "") -> bool:
     """Verbatim, exactly once, in that document's own text. "Exactly once" matters
     as much as "present": an amendment whose evidence points at one of two
     identical sentences looks precise and is not."""
     if not quote.strip():
         return False
+    # First inside the paragraph the judge was shown, where boilerplate that recurs
+    # in the document ("is hereby deleted in its entirety and replaced with the
+    # following" opens two sections of the demo amendment) is still unambiguous.
+    # Still verbatim and still exactly once — just within the passage it came from.
+    if within and find_quote(within, quote) is not None:
+        return True
     with ctx.engine.begin() as conn:
         row = conn.execute(
             sql("SELECT extracted_text FROM documents WHERE id = :id"), {"id": document_id}
@@ -378,12 +574,13 @@ def _order(left: dict[str, Any], right: dict[str, Any]) -> tuple[dict[str, Any],
     return right, left
 
 
-def _side(fact: dict[str, Any]) -> dict[str, Any]:
+def _side(fact: dict[str, Any], context: str = "") -> dict[str, Any]:
     value = fact.get("value") or {}
     return {
         "document": fact.get("filename"),
         "value_text": value.get("text") if isinstance(value, dict) else None,
         "source_quote": fact.get("source_quote"),
+        "context": context,
     }
 
 
@@ -453,7 +650,7 @@ def _slots_with_facts(ctx: RunContext, agreement_id: str) -> list[dict[str, Any]
                 "FROM claim_slots s JOIN facts_and_claims f ON f.slot_id = s.id "
                 "JOIN documents d ON d.id = f.source_document_id "
                 "WHERE s.agreement_id = :a AND f.status = 'active' "
-                "  AND f.role <> 'superseded' "
+                "  AND f.role <> 'superseded' AND d.status NOT IN ('removed', 'superseded', 'quarantined') "
                 "ORDER BY s.field_key NULLS LAST, s.subject_free, f.value_group, d.created_at"
             ),
             {"a": agreement_id},

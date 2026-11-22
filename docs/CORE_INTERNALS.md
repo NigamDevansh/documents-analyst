@@ -103,7 +103,7 @@ src/documents_analyst_core/
 ├── provenance/          models.py · normalize.py · extract.py · open_subjects.py · injection.py
 ├── taxonomy/            fields.py (single source of truth) · schema.py
 ├── entities/            parties.py — candidates → normalize → match → pick · family.py
-├── embeddings/          EmbeddingProvider protocol + OpenAI (text-embedding-3-small)
+├── embeddings/          EmbeddingProvider protocol + OpenAI and Gemini clients
 ├── nli/                 NLIClient protocol + deberta + stub
 ├── prompts/             wrapping · extraction · open_subjects · parties · adjudication · audit
 └── telemetry/           records.py · sink.py (Protocol) · pricing.py
@@ -165,7 +165,9 @@ Why the split — a backoff held in memory dies with the process. If the client
 slept five minutes and the worker were killed at minute four, that wait would
 restart from zero, and nothing would record that it ever happened. So the client
 retries briefly and then raises; the document stays `ingested` with its
-`attempts` counted, and a later tick tries again, up to `job_max_attempts`.
+`attempts` counted, and a later tick tries again. After `job_max_attempts`
+incomplete extractions the backend quarantines it (`extraction failed after N
+attempts: …`) and the rest of the pile carries on; **Retry** re-queues it.
 
 | Failure | Client behaviour | Then |
 |---|---|---|
@@ -294,6 +296,36 @@ One source of truth, two consumers — the SQL seed for `contract_fields` and th
 JSON schema that constrains extraction. They cannot drift because they are
 generated from the same list.
 
+A `FieldDef` may carry `aliases`: unambiguous other names for the same field,
+never broader clause topics (`recurring_price` — "Monthly fee", "Subscription
+fee", …; also `payment_terms_days`, `term_length_months`,
+`termination_notice_days`). The open-subject prompt lists them under "Also
+called", and the backend's `Extract` folds an open subject whose name matches a
+key, label or alias into that field only if it passes Gate 1 and its value fits
+the field's kind (`_fits_kind`: typed kinds must normalise, an enum must be a
+short label). Otherwise it stays an open subject.
+
+### `embeddings/` — OpenAI or Gemini
+
+Both clients implement `EmbeddingProvider`, request 384 dimensions, preserve
+input order, check response dimensions, retry transient failures, and keep
+`last_usage` local to the calling thread. OpenAI uses `text-embedding-3-small`
+by default; Gemini uses `gemini-embedding-001`, normalises returned vectors,
+and estimates input tokens at four characters per token because the response
+does not include a token count.
+
+The backend injects the key, provider and model from `Settings`; core never
+reads `.env`. Blank `EMBEDDING_PROVIDER` picks OpenAI when its key is present,
+otherwise Gemini when its key is present. With neither key, OpenAI is the default
+and the requirement stays unmet. Claude users need one of those keys as well as
+their LLM key.
+
+Vectors from different models are not comparable. Matching re-embeds open-subject
+facts with stored vectors when their stored model name differs from the configured
+embedding model. Taxonomy facts match by field key instead. A provider change
+therefore needs a working key for the new provider and another graph
+run; do not manually mix vectors from different providers.
+
 ### `portable/llm_client.py`
 
 ```python
@@ -305,7 +337,7 @@ class LLMClient(Protocol):
 ```
 
 `structured` is where schema-constraining happens: Gemini gets
-`response_json_schema`, Anthropic gets a forced tool with `input_schema`, and
+`response_json_schema`, Anthropic gets native `output_config.format` JSON schema, and
 OpenAI gets `response_format` with `strict: true`. All normalise into one
 `Usage`, so nothing downstream branches on provider.
 
@@ -380,7 +412,7 @@ Core parses, embeds, classifies, calls LLMs and verifies quotes. Deciding
 
 **Also not in `portable/`** — anything that would drag a dependency along with
 it, or that holds state across a run. `telemetry/sink.py` is a protocol;
-`embeddings/` needs an OpenAI client; `nli/` needs a model. Useful, not
+`embeddings/` needs an OpenAI or Gemini API client; `nli/` needs a model. Useful, not
 copyable, so outside the portable zone.
 
 ---
@@ -407,3 +439,20 @@ has a fake because every dependency is an interface.
 ## See also
 
 [`BACKEND_INTERNALS.md`](BACKEND_INTERNALS.md) · [`TESTING.md`](TESTING.md) · [`BUILD_AND_RUNTIME.md`](BUILD_AND_RUNTIME.md)
+
+
+### Complete extraction, and pricing after the fact
+
+`ExtractionResult` and `OpenSubjectResult` report `failed_sections` and
+`complete`. A successful empty section differs from a failed section. The
+application retries an incomplete document atomically, so partial facts cannot
+masquerade as complete extraction. The open-subject pass no longer discards
+material terms after an arbitrary per-document count (`MAX_PER_DOCUMENT` is
+gone; `truncated` stays as a legacy counter, always 0).
+
+Portable code imports no application/database module. SDK-native retries are
+disabled and network calls have a 60-second timeout. There is no per-call spend
+hook and no spending limit: every call reports its `Usage`, and the application
+prices it afterwards for the cost report. `telemetry/pricing.load_prices` refuses
+negative or non-finite rates; a model missing from the table costs 0 and is
+reported as unpriced, never blocked.

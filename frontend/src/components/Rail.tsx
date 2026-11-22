@@ -30,7 +30,7 @@ export function Rail({
   onHelp: () => void;
 }) {
   return (
-    <nav className="rail">
+    <nav className="rail" id="pile-navigation" aria-label="Pile navigation">
       <div className="rail__head">
         <span className="wordmark">
           Contract Pile Analyst

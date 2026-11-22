@@ -8,16 +8,17 @@ in [`BACKEND_INTERNALS.md`](BACKEND_INTERNALS.md); this is the part underneath i
 
 ## 1. The short answer
 
-**This is one process with one timer-driven loop, a small pool of per-pile
-thread lanes that the loop fans out to for graph work, plus one daemon thread
+**This is one process with one timer-driven discovery loop, one graph-drain
+thread that fans out to a small pool of per-pile lanes, plus one daemon thread
 that only makes the loop wake sooner.** There is no cron, message broker,
 filesystem listener or background heartbeat thread. The `Built` column below
 records which phase each part arrived in.
 
 | Thread | What it does | Lifetime | Built |
 |---|---|---|---|
-| **main loop** | Every 30s: discover folders, acquire each pile lease, scan and ingest it — one pile after another | whole process | **Phase 3** |
-| **pile lanes** | Up to `pile_concurrency` threads (named `pile_0`, `pile_1`, …); each claims a pile, runs or resumes its graph, claims the next | one pass's drain, then joined | **Per-pile threading** — see §1a |
+| **main loop** | Every 30s or when woken: discover folders, acquire each pile lease, scan and ingest it — one pile after another — then hand graph work to the drain thread if it is idle | whole process | **Phase 3** |
+| **graph drain** | One `graph-drain` executor thread: `drain_resumes`, then `drain_runs`; the main loop never waits for it | one drain at a time | **Independent discovery** — see §1 |
+| **pile lanes** | Up to `pile_concurrency` threads (named `pile_0`, `pile_1`, …), started by the drain; each claims a pile, runs or resumes its graph, claims the next | one drain, then joined | **Per-pile threading** — see §1a |
 | **graph runner** | Claims ingested, graph-ready documents and runs the graph | inside a lane, after discovery | **Phase 4A, a function a lane calls** |
 | **resume sweep** | Resumes piles whose review queue is now empty | inside the lanes, before the runner | **Phase 5, a function a lane calls** |
 | **notify listener** | Holds a Postgres `LISTEN` connection and sets one `threading.Event` | daemon, whole process | **Phase 5** |
@@ -25,14 +26,18 @@ records which phase each part arrived in.
 | **heartbeat** | Renews the lease so nobody steals the pile | while a lease is held | **Phase 3, but not a thread** |
 
 **Phase 3 deliberately built one loop, not four threads, and the loop is still
-the spine.** Each tick discovers folders and then drains whatever discovery made
-ready, so a document found in a pass is extracted in the same pass rather than
-thirty seconds later. Discovery — scan, hash, parse — stays on the main loop
-thread, sequential per pile. Only the drain fans out: separate piles are
+the spine.** Each tick discovers folders and then, if no drain is running, submits
+one (`watch_loop`), so a document found in a pass is handed to the graph in the
+same pass rather than thirty seconds later. Discovery — scan, hash, parse, and
+the final-document check — stays on the main loop thread, sequential per pile,
+and no longer waits for graph work: a slow LLM call in one pile cannot hold up
+another pile's discovery or repair. There is exactly one drain at a time, on its
+own executor thread; the drain fans out to lanes because separate piles are
 independent (§9), so folder 2 should not wait for folder 1's extraction, and the
 coordination that makes it safe already existed — the claim plus the lease that
 coordinate *processes* coordinate threads in one process just as well. §1a has
-the detail.
+the detail. `run_once` (`--once`) keeps the old synchronous order: discover,
+resume, run, return.
 
 **The one thread Phase 5 did add does as little as possible.** It sets an event.
 It does not carry a pile id into the loop, does not queue work, and nothing
@@ -46,6 +51,12 @@ pass is running arrives too late for that pass, so the flag has to survive into
 the wait and start the next one immediately. Clearing afterwards drops exactly
 that notification — and it is the common one, since a pass is when the worker is
 busy enough to be worth notifying.
+
+A wake that lands while a drain is still running cannot start another drain.
+So it is recorded (`missed`), and that drain's done-callback sets the event the
+moment it finishes, instead of the approval waiting out the rest of
+`scan_interval_s`. Only a missed wake does this: waking after every drain would
+spin, because an empty drain finishes at once.
 
 A lane stops early on one condition, and it is the loop refusing to spin. A run
 that finished without retiring a single document leaves the pile exactly as
@@ -113,13 +124,14 @@ parallel, one thread each.** `pile_concurrency` in `config/runtime.yaml`
 
 ```
 main loop thread     discover: scan · hash · parse   pile A, then B, then C, then D
+                     submit a drain if none is running; wait for the event or the timer
                                     │
-                     drain_resumes ─┼─ up to N lanes, one reviewed pile each   (_resume_one)
+graph-drain thread   drain_resumes ─┼─ up to N lanes, one reviewed pile each   (_resume_one)
                      drain_runs    ─┘  N = 3 lanes in a ThreadPoolExecutor("pile")
                                          lane 1: claim A → run A (pauses at gate) → claim D → run D → nothing → return
                                          lane 2: claim B → run B → nothing → return
                                          lane 3: claim C → run C → nothing → return
-                     lanes joined; wait for the event or the timer
+                     lanes joined; drain done (wakes the loop if a wake was missed)
 ```
 
 **The claim is what keeps lanes apart, and it is the same claim that keeps
@@ -148,16 +160,16 @@ the lanes overlap.
 | Shared across lanes | Why it is safe |
 |---|---|
 | The LangGraph `PostgresSaver` checkpointer | Locks per cursor already, so it is thread-safe as it stands; checkpoints are keyed by pile id |
-| The LLM client | Stateless per call; nothing from one request survives into the next |
-| `OpenAIEmbeddings` | An HTTP client whose only state, `last_usage`, is now **thread-local** — each pile's cost report gets its own embedding usage, not a neighbour's |
+| The extraction and judge LLM clients | Stateless per call; nothing from one request survives into the next. One client when `LLM_MODEL_JUDGE` resolves to the extraction model |
+| `OpenAIEmbeddings` / `GeminiEmbeddings` | API clients whose `last_usage` is **thread-local** — each pile's cost report gets its own embedding usage, not a neighbour's |
 | The local NLI (DeBERTa) and NER (GLiNER) models | Wrapped by `models.shared_across_threads` in `_Serialized`, a per-model lock. Hugging Face fast tokenizers are not thread-safe — two threads in one at once raise "Already borrowed" — so these calls take turns. They take milliseconds next to an LLM call's seconds, and one set of weights serves every lane instead of a copy per thread |
 | Postgres rows | Every write is epoch-and-TTL fenced to its pile's lease (§1) |
 
 **LLM calls run concurrently**, which is the point — and the cost: raising
 `pile_concurrency` multiplies the request rate against your provider. Raise it
 only as far as the provider's rate limit allows. `pile_concurrency: 1` restores
-strictly one pile after another, with the drain running on the main loop
-thread exactly as it did before lanes existed.
+strictly one pile after another, with the drain running its piles in order on
+the drain thread, no pool.
 
 ### Inside one pile, files go strictly one at a time
 
@@ -195,8 +207,11 @@ and a failure to repair is logged without marking the pile `error`.
 
 The scanner and the graph runner are separated through Postgres, and both now
 exist. Discovery stores a document as `ingested` and releases its lease; the
-runner claims a pile with `ingested` originals, takes its lease in the same
-statement, and drives the graph over the whole batch. A document that has been
+runner claims a pile with work — `ingested` originals, a `run.sources_changed`
+newer than its last `run.coverage_updated` (a copy added or removed, an item sent
+back for recheck), orphaned claims, or an approval not yet committed — takes its
+lease in the same statement, and drives the graph over the whole batch. Piles in
+`awaiting_review` or `error` (or legacy `parked`) are never claimed this way. A document that has been
 extracted moves to `extracted` and leaves the queue, which is what stops the
 same pile being run again on the next tick.
 
@@ -294,7 +309,10 @@ for each pile:
     listing = walk(pile.watch_path)                 # entries + did we see everything?
     known   = load documents.paths for this pile    # one query, whole map
     for entry in listing.entries:
-        if ignored_name(entry):        continue     # ~$doc.docx, .part, .tmp, dotfiles
+        if ignored_name(entry):        continue     # ~$doc.docx, .part, .tmp, dotfiles,
+                                                    #   Thumbs.db, desktop.ini, Icon\r
+        if rulebook(entry):            continue     # rulebook.yaml; .yml/.json/.txt lookalikes
+                                                    #   skipped with a one-time warning
         if ours(entry):                continue     # final-document.docx at the pile ROOT only
         if mtime_age(entry) < settle:  continue     # one stat; safe across restart
         if unchanged(entry, known):    continue     # path+size+mtime+inode all match
@@ -308,6 +326,14 @@ for each pile:
 
 The whole path map for a pile is loaded once per scan, so the inner loop is
 memory comparisons, not queries.
+
+**OS clutter and rulebook near-misses are skipped, not quarantined.** A
+quarantined file is listed in the final document as a source that was not
+analysed, which is wrong for a Windows thumbnail cache or the macOS custom-icon
+file. A `rulebook.yml`, `rulebook.json` or `rulebook.txt` is someone who meant a
+rulebook: it is skipped and logged once (`… is not applied: the rulebook must be
+named rulebook.yaml`) rather than quarantined as an unsupported document. Any
+other unsupported file is read and quarantined with the reason.
 
 **The scanner never reads the system's own output.** The final document is
 written into the pile's folder, so `scan_pile(..., skip_root_names=...)` skips
@@ -414,9 +440,12 @@ different machine can pick it up.**
 
 1. Load and validate config (fail loudly on a bad value, not on first use)
 2. Connect to Postgres, wait for migrations
-3. Report model-cache availability
-4. Open the graph environment once — checkpointer, models, LLM client — with
-   the two local models wrapped so every pile lane can share them (§1a)
+3. Report model-cache availability, and log any `pricing:` warning — a model
+   with no price, or one past or near its `valid_until` (prices never block a
+   call)
+4. Open the graph environment once — checkpointer, models, extraction and judge
+   LLM clients — with the two local models wrapped so every pile lane can share
+   them (§1a)
 5. Install the SIGTERM/SIGINT handler
 6. Start the notify listener (Phase 5), which wakes the loop once on connect
 7. Start the timer loop — its first pass is always a **deep** scan
@@ -425,7 +454,8 @@ different machine can pick it up.**
 the next pile and the ingester checks it before each document and immediately
 after hashing/parsing, and every pile lane checks it before claiming or
 resuming another pile. Each releases its live lease in its `finally` block and
-the process exits once the lanes have returned. A single filesystem operation already in progress is allowed to
+the process exits once the drain and its lanes have returned (the executor joins
+graph threads before the engine and models close). A single filesystem operation already in progress is allowed to
 return first; we do not start another one.
 
 The listener is a daemon thread holding one idle connection and no state worth
@@ -543,7 +573,7 @@ decision in common.
 | The final document | `<watch_path>/final-document.docx`, recorded in `piles.deliverable_*` |
 | Rulebook | `piles.rulebook_path` |
 | Lease | `piles.lease_owner_id / lease_epoch` |
-| Status | idle · scanning · running · awaiting_review · error |
+| Status | idle · running · awaiting_review · error (the schema also allows `scanning` and `parked`; nothing sets either now, and Retry still accepts a legacy `parked` pile) |
 
 The **Pile Navigator** in the left sidebar lists them with a live status dot, and
 selecting one switches the whole workspace — register, source pane, review queue
@@ -568,6 +598,7 @@ flowchart TB
   subgraph W["worker process"]
     MAIN["one main loop<br/>every 30s, or when woken"]
     SCAN["discover → lease → ingest<br/>(main thread, pile by pile)"]
+    DRAIN["graph-drain thread<br/>one drain at a time"]
     RESUME["resume piles whose<br/>queue is now empty<br/>(up to N lanes)"]
     RUN["N pile lanes: claim a pile → run the graph → claim the next<br/>(Commit writes final-document.docx)"]
     LISTEN(["notify listener<br/>daemon thread"])
@@ -577,7 +608,9 @@ flowchart TB
   DB[("Postgres")]
   API["the API"]
 
-  MAIN --> SCAN --> RESUME --> RUN
+  MAIN --> SCAN
+  MAIN -->|"submit if idle"| DRAIN --> RESUME --> RUN
+  DRAIN -.->|"done: wake if one was missed"| MAIN
   FS --> SCAN
   RUN -->|"final-document.docx<br/>at the pile root"| FS
   SCAN -->|"fenced document writes<br/>status=ingested"| DB
@@ -586,3 +619,35 @@ flowchart TB
   API -->|"approval → trigger → NOTIFY"| LISTEN
   LISTEN -.->|"sets one Event —<br/>latency only, never truth"| MAIN
 ```
+
+
+## Independent discovery and bounded graph work
+
+The continuous worker uses `watch_loop` (§1): discovery and idle-deliverable
+repair run on the timer while one background graph-drain future owns the pile
+lanes. `run_once` remains synchronous for one-shot runs.
+
+Provider attempts have a 60-second timeout and no hidden SDK retries. There is
+no spending limit: prices only convert tokens to dollars, and each run's closing
+event (`run.finished`, `run.paused`, `run.incomplete`) carries `cost_usd`,
+`calls` and, when a model has no price, `unpriced_calls`/`unpriced_models`.
+
+An incomplete extraction counts as an attempt. After `job_max_attempts` the file
+is quarantined with `extraction failed after N attempts: <reason>` and the pile
+moves on, so a section that always fails is not re-billed on every scan.
+**Retry** is accepted for a failed pile, and for an idle one with such files: it
+re-queues them with attempts reset.
+
+A source change withdraws only the uncommitted review items whose cited facts
+changed (`invalidate_review` compares each item's evidence with the live facts).
+An identical copy withdraws nothing; a new, replaced, restored or removed file
+also sends an `awaiting_review` pile back to `idle`, so the change is read now
+and its questions join the same review. An approval that hits changed evidence
+gets a 409 and the item is withdrawn and re-asked (`send_back_for_recheck`),
+instead of staying pending and unapprovable.
+
+Seen hashes reconcile overwritten path ownership even when another copy stays
+live. Superseded facts reactivate when their immutable source returns. Promoted
+format aliases preserve their surviving terms; a restored original joins an
+existing canonical twin rather than duplicating its facts. Complete scans prune
+deleted copy paths; incomplete scans never infer removals.

@@ -79,6 +79,12 @@ CLAIMABLE_SQL = f"""
                     WHERE d.pile_id = p.id AND d.status = 'ingested'
                       AND d.alias_of_document_id IS NULL
                  )
+             OR EXISTS (
+                 SELECT 1 FROM stage_events changed
+                 WHERE changed.pile_id = p.id AND changed.type = 'run.sources_changed'
+                 AND changed.id > COALESCE((SELECT max(done.id) FROM stage_events done
+                     WHERE done.pile_id = p.id AND done.type = 'run.coverage_updated'), 0)
+             )
              OR {ORPHAN_WORK}
              OR {APPROVED_WORK}
            )

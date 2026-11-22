@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import JSONResponse
 
 from documents_analyst.api.deps import Actor, Db, run
 from documents_analyst.api.schemas import BATCHABLE_KINDS, BatchApproveRequest, DecisionRequest
@@ -125,6 +126,21 @@ async def _settle(
         missing = _bad_choice(item, body)
         if missing:
             raise HTTPException(status_code=422, detail=missing)
+        if (
+            item["status"] == "pending"
+            and item.get("ref_id")
+            and not await run(conn, decision_repo.evidence_current, item, body.chosen_value_group)
+        ):
+            # Returned, not raised: an exception would roll back the request's
+            # transaction, and with it the withdrawal that lets the item be asked again.
+            await run(conn, decision_repo.send_back_for_recheck, item)
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=409,
+                content={
+                    "detail": "The sources behind this item changed, so it was sent back to "
+                    "be checked again. A fresh item with the current options appears shortly."
+                },
+            )
 
     settled = await run(
         conn,

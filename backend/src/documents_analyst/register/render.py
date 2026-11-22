@@ -58,7 +58,18 @@ def body(slot: Slot) -> str:
         return ORPHANED
     else:
         corroboration = (
-            f" (stated in {current.citation_count} documents)" if current.citation_count > 1 else ""
+            f" (stated in {len(current.document_ids)} documents)"
+            if len(current.document_ids) > 1
+            else ""
         )
         text = f"{current.value_text}{corroboration}"
-    return f"{text} — {ORPHANED}" if slot.orphaned else text
+    text = f"{text} — {ORPHANED}" if slot.orphaned else text
+    if slot.resolved_by and slot.state == "resolved":
+        text += f"\nReviewed choice: {slot.resolved_by}."
+    sources = [source for value in slot.values for source in value.citations]
+    if sources:
+        text += "\nSources (verbatim evidence):" + "".join(
+            f"\n- {source['filename']}, chars {source['start']}–{source['end']}: “{source['quote']}”"
+            for source in sources
+        )
+    return text

@@ -102,7 +102,7 @@ class OpenAIEmbeddings:
                 import openai
             except Exception as exc:  # noqa: BLE001 — package missing
                 raise EmbeddingUnavailable(model=self.model_name, detail=str(exc)) from exc
-            self._client = openai.OpenAI(api_key=self._api_key)
+            self._client = openai.OpenAI(api_key=self._api_key, max_retries=0, timeout=60.0)
         return self._client
 
     @property

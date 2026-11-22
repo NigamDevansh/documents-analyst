@@ -30,6 +30,7 @@ from documents_analyst.api.deps import Config, Db, run
 from documents_analyst.db.repo import documents as doc_repo
 from documents_analyst.db.repo import facts as fact_repo
 from documents_analyst.db.repo import piles as pile_repo
+from documents_analyst.worker.scanner import ignored_name, supported
 
 LOG = logging.getLogger(__name__)
 
@@ -61,6 +62,12 @@ async def upload(pile_id: str, file: UploadFile, conn: Db, settings: Config) -> 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"{name} is the name of the generated final document; rename the file",
+        )
+
+    if not supported(name) or ignored_name(name):
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported document format. Upload PDF, DOCX, Markdown, TXT, or HTML.",
         )
 
     body = await file.read(MAX_UPLOAD_BYTES + 1)

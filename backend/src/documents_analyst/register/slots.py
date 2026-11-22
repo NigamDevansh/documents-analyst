@@ -8,6 +8,7 @@ asked once.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
@@ -24,6 +25,7 @@ class SlotValue:
     value_normalized: str | None
     document_ids: tuple[str, ...]
     citation_count: int
+    citations: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,14 +98,15 @@ SLOT_ROWS = text("""
            s.label_override, s.resolved_by, a.title AS agreement_title,
            a.parties_normalized AS agreement_parties,
            f.id AS fact_id, f.value, f.value_norm, f.value_group,
-           f.source_document_id, d.status AS source_status
+           f.source_document_id, d.status AS source_status, d.filename, d.paths, p.watch_path AS source_root, f.source_quote, f.char_start, f.char_end
       FROM claim_slots s
       JOIN agreements a ON a.id = s.agreement_id
+      JOIN piles p ON p.id = a.pile_id
  LEFT JOIN facts_and_claims f
         ON f.slot_id = s.id AND f.status = 'active' AND f.role <> 'superseded'
  LEFT JOIN documents d ON d.id = f.source_document_id
      WHERE a.pile_id = :pile_id AND s.retired_at IS NULL
-  ORDER BY a.created_at, s.field_key NULLS LAST, s.subject_free, f.value_group
+  ORDER BY a.created_at, s.field_key NULLS LAST, s.subject_free, f.value_group, f.char_start, f.id
 """)
 """`LEFT JOIN`, because a slot with no live facts is still a slot. Every fact behind it can
 be superseded or removed while the row stays in the register — the orphaned-claims case,
@@ -121,6 +124,12 @@ def for_pile(conn: Connection, pile_id: str) -> list[Slot]:
     over a 28-field agreement is 28 round trips to draw one page."""
     rows = conn.execute(SLOT_ROWS, {"pile_id": pile_id}).all()
     building: dict[str, dict[str, Any]] = {}
+    live_slots = {
+        str(row.id)
+        for row in rows
+        if row.fact_id is not None
+        and row.source_status not in ("removed", "superseded", "quarantined")
+    }
 
     for row in rows:
         slot = building.setdefault(
@@ -141,6 +150,12 @@ def for_pile(conn: Connection, pile_id: str) -> list[Slot]:
         )
         if row.fact_id is None:
             continue
+        if str(row.id) in live_slots and row.source_status in (
+            "removed",
+            "superseded",
+            "quarantined",
+        ):
+            continue
         # Counted per FACT, not per document: one surviving source is enough to keep the
         # row grounded, and a slot with three values where two files were deleted is still
         # answerable from the third.
@@ -148,12 +163,34 @@ def for_pile(conn: Connection, pile_id: str) -> list[Slot]:
             slot["live_sources"] += 1
         group = slot["groups"].setdefault(
             int(row.value_group or 0),
-            {"value_text": "", "value_norm": row.value_norm, "documents": [], "citations": 0},
+            {
+                "value_text": "",
+                "value_norm": row.value_norm,
+                "documents": [],
+                "citations": 0,
+                "sources": [],
+            },
         )
         value = row.value or {}
         group["value_text"] = group["value_text"] or str(value.get("text") or "")
         group["documents"].append(str(row.source_document_id))
         group["citations"] += 1
+        relative = []
+        for raw in sorted(row.paths or {}):
+            try:
+                relative.append(str(Path(raw).relative_to(row.source_root)))
+            except ValueError:
+                relative.append(Path(raw).name)
+        filename = "; ".join(relative) or row.filename
+        group["sources"].append(
+            {
+                "filename": filename,
+                "document_id": str(row.source_document_id),
+                "quote": row.source_quote,
+                "start": row.char_start,
+                "end": row.char_end,
+            }
+        )
 
     return [
         Slot(
@@ -177,6 +214,7 @@ def for_pile(conn: Connection, pile_id: str) -> list[Slot]:
                     value_normalized=g["value_norm"],
                     document_ids=tuple(dict.fromkeys(g["documents"])),
                     citation_count=g["citations"],
+                    citations=tuple(g["sources"]),
                 )
                 for index, g in sorted(s["groups"].items())
             ),

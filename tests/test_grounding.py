@@ -598,3 +598,107 @@ def test_a_quote_from_html_still_grounds(tmp_path: Path) -> None:
     assert fact is not None, why
     assert text[fact.citation.start : fact.citation.end] == fact.citation.quote
     assert fact.value_normalized == "45"
+
+
+@pytest.mark.parametrize("has_primary_fact", [False, True])
+@pytest.mark.parametrize("subject_name", ["Payment_Terms_Days", "Invoice Payment Period"])
+def test_known_open_subject_is_consolidated_without_losing_unique_terms(
+    has_primary_fact: bool,
+    subject_name: str,
+) -> None:
+    from documents_analyst.graph.nodes.extract import _consolidate_known_subjects
+    from documents_analyst_core.provenance.extract import ground_fact
+    from documents_analyst_core.provenance.models import Citation
+    from documents_analyst_core.provenance.open_subjects import OpenSubject, OpenSubjectResult
+
+    quote = "Invoices are payable within forty-five (45) days."
+    other = "Customer may audit records annually."
+    body = quote + "\n" + other
+    fact, _ = ground_fact(
+        {
+            "field_key": "payment_terms_days",
+            "value_text": "45 days",
+            "source_quote": quote[:-1],
+            "start": 0,
+            "end": len(quote) - 1,
+        },
+        document_id="source",
+        text=body,
+    )
+    assert fact is not None
+    facts = [fact] if has_primary_fact else []
+    subjects = [
+        OpenSubject(
+            subject_name,
+            "payable within forty-five (45) days",
+            Citation("source", None, 0, len(quote), quote),
+        ),
+        OpenSubject(
+            "Audit rights", "annually", Citation("source", None, len(quote) + 1, len(body), other)
+        ),
+    ]
+    result = _consolidate_known_subjects(facts, OpenSubjectResult(subjects, [], 1), "source", body)
+    assert len(facts) == 1
+    assert facts[0].field_key == "payment_terms_days" and facts[0].value_normalized == "45"
+    assert [s.subject for s in result.subjects] == ["Audit rights"]
+
+
+def test_billing_period_is_not_routed_to_invoice_payment_deadline() -> None:
+    from documents_analyst.graph.nodes.extract import _consolidate_known_subjects
+    from documents_analyst_core.provenance.models import Citation
+    from documents_analyst_core.provenance.open_subjects import OpenSubject, OpenSubjectResult
+
+    quote = "Each payment period is one month, invoiced at the beginning of the period."
+    body = quote + "\nInvoices are payable within 45 days."
+    fact, _ = ground_fact(
+        {
+            "field_key": "payment_terms_days",
+            "value_text": "45 days",
+            "source_quote": body[len(quote) + 1 :],
+        },
+        document_id="source",
+        text=body,
+    )
+    assert fact is not None
+    facts = [fact]
+    subject = OpenSubject(
+        "Payment period", "one month", Citation("source", None, 0, len(quote), quote)
+    )
+    result = _consolidate_known_subjects(facts, OpenSubjectResult([subject], [], 1), "source", body)
+    assert facts == [fact]
+    assert result.subjects == [subject]
+
+
+def test_a_name_match_with_the_wrong_kind_of_value_stays_an_open_subject() -> None:
+    """ "Indemnity" names the yes/no field, but "mutual indemnification for third-party
+    claims" is not a yes or no. Folded in, it became a second value beside the real
+    answer and read as a disagreement."""
+    from documents_analyst.graph.nodes.extract import _consolidate_known_subjects
+    from documents_analyst_core.provenance.models import Citation
+    from documents_analyst_core.provenance.open_subjects import OpenSubject, OpenSubjectResult
+
+    body = "Each party shall provide mutual indemnification for third-party claims."
+    subject = OpenSubject(
+        "Indemnity",
+        "mutual indemnification for third-party claims",
+        Citation("source", None, 0, len(body), body),
+    )
+    facts: list[Any] = []
+    result = _consolidate_known_subjects(facts, OpenSubjectResult([subject], [], 1), "source", body)
+    assert facts == []
+    assert result.subjects == [subject]
+
+
+def test_a_monthly_fee_is_the_recurring_price_not_a_second_field() -> None:
+    """The same fee extracted twice — once as Recurring price, once as an open subject
+    "Monthly fee" — printed every agreement's price twice in the final document."""
+    from documents_analyst.graph.nodes.extract import _consolidate_known_subjects
+    from documents_analyst_core.provenance.models import Citation
+    from documents_analyst_core.provenance.open_subjects import OpenSubject, OpenSubjectResult
+
+    body = "The monthly fee for the Services is USD 12,000."
+    subject = OpenSubject("Monthly fee", "USD 12,000", Citation("source", None, 0, len(body), body))
+    facts: list[Any] = []
+    result = _consolidate_known_subjects(facts, OpenSubjectResult([subject], [], 1), "source", body)
+    assert [(f.field_key, f.value_normalized) for f in facts] == [("recurring_price", "12000 USD")]
+    assert result.subjects == []

@@ -12,10 +12,14 @@ human approving something writes to the same row the graph will read.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class PileRunState(TypedDict):
+    review_pending: NotRequired[bool]
+    budget_id: NotRequired[str]
+    """Legacy: written by checkpoints from before the spending limit was removed.
+    Kept so those paused runs still load; nothing reads it."""
     pile_id: str
     run_id: str
     lease_epoch: int

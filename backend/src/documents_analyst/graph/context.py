@@ -37,6 +37,11 @@ class RunContext:
     llm: LLMClient
     telemetry: StageRunSink
     watch_root: Path
+    judge_client: LLMClient | None = None
+
+    @property
+    def judge(self) -> LLMClient:
+        return self.judge_client or self.llm
 
     def renew_lease(self, fence: Fence) -> None:
         """Give the next bounded unit of graph work a full lease TTL. Called at

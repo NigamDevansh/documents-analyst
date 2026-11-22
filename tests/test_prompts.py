@@ -167,12 +167,35 @@ def test_adjudication_requires_evidence_for_an_amendment() -> None:
     assert "say `conflict` and let a human decide" in system
 
 
-def test_adjudication_offers_not_a_conflict() -> None:
+def test_adjudication_offers_a_compatible_verdict_the_schema_accepts() -> None:
     """Two values differing is not always a disagreement — different scopes or
-    periods are compatible. Without this option the model must pick a fight."""
-    system, _ = adjudication.build("f", {}, {}, doc_relationship="x")
+    periods are compatible. Without this option the model must pick a fight. The
+    prompt used to call it `not_a_conflict`, a value the answer schema rejects."""
+    from documents_analyst_core.taxonomy.schema import adjudication_schema
 
-    assert "not_a_conflict" in system
+    system, _ = adjudication.build("f", {}, {}, doc_relationship="x")
+    verdicts = adjudication_schema()["properties"]["verdict"]["enum"]
+
+    assert "`agree`" in system and "agree" in verdicts
+    assert "not_a_conflict" not in system
+
+
+def test_adjudication_shows_each_side_its_paragraph() -> None:
+    """The replacing words sit beside the value, not in its quote. Without the
+    paragraph the judge invented its evidence."""
+    _, user = adjudication.build(
+        "recurring_price",
+        {"document": "a.md", "value_text": "USD 10,000", "source_quote": "USD 10,000"},
+        {
+            "document": "b.md",
+            "value_text": "USD 12,000",
+            "source_quote": "the monthly fee shall be USD 12,000",
+            "context": "Section 4.2 is hereby deleted and replaced with the following: "
+            "the monthly fee shall be USD 12,000.",
+        },
+        doc_relationship="x",
+    )
+    assert "paragraph: Section 4.2 is hereby deleted" in user
 
 
 # ── audit ─────────────────────────────────────────────────────────────────
@@ -285,7 +308,7 @@ def test_no_prompt_is_built_outside_this_package() -> None:
 SNAPSHOTS = {
     "wrapping/1": "c1b5c5723c22530f",
     "extraction/1": "d6fd73fc855c600b",
-    "adjudication/2": "35d61432145c8113",
+    "adjudication/4": "494dc9686b6779bf",
     "audit/1": "27f41be2171c5dc6",
     "parties/1": "50d123470b251849",
     "open_subjects/1": "5b5bc916e960e99c",

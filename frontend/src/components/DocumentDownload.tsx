@@ -8,7 +8,7 @@ import type { DeliverableDocument } from "../api/types";
  * not yet. Before the first commit the control says so rather than vanishing,
  * because a missing button teaches nothing.
  *
- * See README.md § "The dashboard".
+ * See docs/UI_AND_LINKING.html.
  */
 export function DocumentDownload({
   document,

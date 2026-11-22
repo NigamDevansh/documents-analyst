@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
+from review_helpers import seed_options
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -44,7 +45,7 @@ from documents_analyst_core.provenance.models import Citation, GroundedFact
 
 pytestmark = pytest.mark.db
 
-SCRATCH = "analyst_mcp_test"
+SCRATCH = "analyst_mcp_test_" + uuid.uuid4().hex[:12]
 
 CONTRACT = (
     "The monthly fee shall be USD 10,000 under the original agreement.\n"
@@ -176,11 +177,25 @@ def raise_item(
     assert epoch is not None
     try:
         with engine.begin() as conn:
+            fence = Fence(pile_id=pile_id, epoch=epoch)
+            options = [
+                {
+                    "value_group": 0,
+                    "value_text": quote or recommendation or "Source term",
+                    "quote": quote,
+                }
+            ]
+            ref_id = (
+                seed_options(conn, fence, options)
+                if kind in ("conflict", "amendment")
+                else str(uuid.uuid4())
+            )
             item = decision_repo.raise_decision(
                 conn,
-                Fence(pile_id=pile_id, epoch=epoch),
+                fence,
                 kind=kind,
-                ref_id=str(uuid.uuid4()),
+                ref_id=ref_id,
+                payload={"options": options, "recommended_value_group": 0},
                 evidence_quote=quote,
                 recommendation=recommendation,
                 relationship="amendment",
@@ -790,7 +805,8 @@ async def test_an_approved_choice_reaches_the_register(
     assert after.state == "resolved"
     assert after.current is not None
     assert after.current.value_text == "USD 12,000"
-    assert render.body(after) == "USD 12,000"
+    assert render.body(after).splitlines()[0] == "USD 12,000"
+    assert "Reviewed choice: mcp:agent" in render.body(after)
     assert render.DISPUTED not in render.body(after)
 
 

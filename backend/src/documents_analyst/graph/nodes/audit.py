@@ -213,7 +213,7 @@ def _judge(
                 _rule_text(rules), [{"document": filename, "text": body}]
             )
             with timed() as elapsed:
-                payload, usage = ctx.llm.structured(
+                payload, usage = ctx.judge.structured(
                     system=system, user=user, schema=schema, max_tokens=1200
                 )
             ctx.record("audit", usage, latency_ms=elapsed())

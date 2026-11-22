@@ -4,6 +4,11 @@ import { cut, lineOf } from "./spans";
 const TEXT = "Payment is due Net 30 days from the date of invoice.";
 
 describe("cut", () => {
+  it("uses Python code-point offsets after emoji without splitting surrogate pairs", () => {
+    expect(cut("😀 Net 30 days", [{ start: 2, end: 13 }]).filter(p => p.marked))
+      .toEqual([{ text: "Net 30 days", marked: true }]);
+    expect(lineOf("😀\nNet 30", 2)).toBe(2);
+  });
   it("marks exactly the span, not the first match of its text", () => {
     // "Net 30" twice: highlighting by search would light the first one.
     const twice = "Net 30 applies. The revised term is Net 30.";

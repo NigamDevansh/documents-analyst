@@ -82,12 +82,15 @@ SUMMARIES = text("""
            (p.lease_expires_at IS NOT NULL AND p.lease_expires_at > now()) AS leased,
            coalesce(d.total, 0)      AS documents,
            coalesce(d.quarantined, 0) AS quarantined,
+           coalesce(d.retryable, 0)   AS retryable,
            coalesce(q.pending, 0)     AS pending_decisions,
            coalesce(s.disputed, 0)    AS open_conflicts,
            coalesce(f.open, 0)        AS open_findings
       FROM piles p
  LEFT JOIN (SELECT pile_id, count(*) AS total,
-                   count(*) FILTER (WHERE status = 'quarantined') AS quarantined
+                   count(*) FILTER (WHERE status = 'quarantined') AS quarantined,
+                   count(*) FILTER (WHERE status = 'quarantined'
+                                      AND quarantine_error LIKE 'extraction failed%') AS retryable
               FROM documents WHERE alias_of_document_id IS NULL GROUP BY pile_id) d
         ON d.pile_id = p.id
  LEFT JOIN (SELECT pile_id, count(*) AS pending
@@ -140,3 +143,73 @@ def notify_work(conn: Connection, pile_id: str) -> None:
     the route, so `analyst/api/` holds no SQL — a test enforces that. Delivered on commit, never
     on rollback, so the worker can't wake for a file that wasn't written."""
     conn.execute(text("SELECT pg_notify('analyst_work', :pile_id)"), {"pile_id": pile_id})
+
+
+RETRYABLE_DOCUMENT = (
+    "status = 'quarantined' AND quarantine_error LIKE 'extraction failed%' "
+    "AND alias_of_document_id IS NULL"
+)
+"""A file that was read but whose extraction kept failing. Not an unparseable file:
+its bytes have not changed, so another try cannot help — editing it re-ingests it."""
+
+
+def retry(conn: Connection, pile_id: str) -> bool:
+    """Start another analysis. Accepted for a failed pile, and for an idle one that has
+    files quarantined because extraction kept failing (a provider outage, a model that
+    could not answer a section). Never while a worker holds the lease or a review is open.
+
+    Failed-extraction files go back in the queue with their attempts reset. For a failed
+    pile, extracted originals are re-queued too so the downstream stages run again;
+    that costs nothing for a file that already has facts, which Extract skips."""
+    pile = conn.execute(
+        text(
+            "SELECT status, EXISTS (SELECT 1 FROM documents d WHERE d.pile_id = p.id "
+            "  AND d.status = 'quarantined' AND d.quarantine_error LIKE 'extraction failed%' "
+            "  AND d.alias_of_document_id IS NULL) AS has_retryable "
+            "FROM piles p WHERE id = :id "
+            "AND (lease_expires_at IS NULL OR lease_expires_at < now()) FOR UPDATE"
+        ),
+        {"id": pile_id},
+    ).first()
+    accepted = pile is not None and (
+        pile.status in ("parked", "error") or (pile.status == "idle" and pile.has_retryable)
+    )
+    row = (
+        conn.execute(
+            text(
+                "UPDATE piles SET status = 'idle', updated_at = now() WHERE id = :id RETURNING id"
+            ),
+            {"id": pile_id},
+        ).first()
+        if accepted
+        else None
+    )
+    if row is not None:
+        conn.execute(
+            text(
+                "UPDATE documents SET status = 'ingested', attempts = 0, quarantine_error = NULL, "
+                f"updated_at = now() WHERE pile_id = :id AND {RETRYABLE_DOCUMENT}"
+            ),
+            {"id": pile_id},
+        )
+        conn.execute(
+            text("UPDATE documents SET attempts = 0 WHERE pile_id = :id AND status = 'ingested'"),
+            {"id": pile_id},
+        )
+        if pile is not None and pile.status in ("parked", "error"):
+            conn.execute(
+                text(
+                    "UPDATE documents SET status = 'ingested' WHERE pile_id = :id "
+                    "AND status = 'extracted' AND alias_of_document_id IS NULL"
+                ),
+                {"id": pile_id},
+            )
+        import uuid
+
+        from documents_analyst.db.repo import events
+
+        events.append(
+            conn, pile_id=pile_id, run_id=str(uuid.uuid4()), type="run.retry_requested", payload={}
+        )
+        notify_work(conn, pile_id)
+    return row is not None

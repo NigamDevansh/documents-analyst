@@ -21,11 +21,13 @@ from sqlalchemy.engine import Engine
 
 from documents_analyst.db.repo import events as event_repo
 from documents_analyst.db.repo import piles as pile_repo
+from documents_analyst.db.repo import telemetry as telemetry_repo
 from documents_analyst.db.repo.telemetry import StageRunSink
 from documents_analyst.graph.build import build_graph
 from documents_analyst.graph.context import CONTEXT_KEY, RunContext
 from documents_analyst.graph.state import PileRunState
 from documents_analyst.models import LoadedModels
+from documents_analyst.pricing import prices
 from documents_analyst.settings import Settings
 from documents_analyst.worker import lease, queue
 from documents_analyst.worker.lease import Fence, LostLease
@@ -54,7 +56,12 @@ class RunOutcome:
 
 
 def _context(
-    engine: Engine, settings: Settings, models: LoadedModels, llm: LLMClient, sink: StageRunSink
+    engine: Engine,
+    settings: Settings,
+    models: LoadedModels,
+    llm: LLMClient,
+    sink: StageRunSink,
+    judge: LLMClient | None = None,
 ) -> RunContext:
     return RunContext(
         engine=engine,
@@ -63,6 +70,7 @@ def _context(
         llm=llm,
         telemetry=sink,
         watch_root=settings.watch_root,
+        judge_client=judge,
     )
 
 
@@ -74,6 +82,7 @@ def run_pile(
     llm: LLMClient,
     *,
     worker_id: str,
+    judge: LLMClient | None = None,
 ) -> RunOutcome | None:
     """Claim one pile with graph-ready work and run it. None if there is none.
     Claim and lease are one statement (`queue.claim_and_lease`) — not because two
@@ -87,7 +96,15 @@ def run_pile(
     pile_id, epoch = claimed
     try:
         return _invoke(
-            engine, checkpointer, settings, models, llm, pile_id=pile_id, epoch=epoch, resume=False
+            engine,
+            checkpointer,
+            settings,
+            models,
+            llm,
+            pile_id=pile_id,
+            epoch=epoch,
+            resume=False,
+            judge=judge,
         )
     finally:
         with engine.begin() as conn:
@@ -103,6 +120,7 @@ def resume_after_approval(
     *,
     pile_id: str,
     worker_id: str,
+    judge: LLMClient | None = None,
 ) -> RunOutcome | None:
     """Re-enter a paused pile. None when its lease is held by someone else. Callable
     knowing only the pile because `thread_id` IS the pile id: the API writes an
@@ -119,7 +137,15 @@ def resume_after_approval(
             # human-approval path, not a normal queue claim.
             pile_repo.set_status(conn, Fence(pile_id=pile_id, epoch=epoch), "running")
         return _invoke(
-            engine, checkpointer, settings, models, llm, pile_id=pile_id, epoch=epoch, resume=True
+            engine,
+            checkpointer,
+            settings,
+            models,
+            llm,
+            pile_id=pile_id,
+            epoch=epoch,
+            resume=True,
+            judge=judge,
         )
     except Exception:
         # Put the pile back where it actually is before letting the error out. A
@@ -149,6 +175,7 @@ def _invoke(
     pile_id: str,
     epoch: int,
     resume: bool,
+    judge: LLMClient | None = None,
 ) -> RunOutcome:
     """One `invoke`, with the lease already held. The batch is read here once, at
     run start — every ingested original in the pile — so a four-document first build
@@ -159,14 +186,14 @@ def _invoke(
     config = {
         "configurable": {
             "thread_id": pile_id,
-            CONTEXT_KEY: _context(engine, settings, models, llm, sink),
+            CONTEXT_KEY: _context(engine, settings, models, llm, sink, judge),
         }
     }
 
     with engine.begin() as conn:
         document_ids = queue.ingested_documents(
             conn, pile_id, max_attempts=settings.job_max_attempts
-        )
+        )[: settings.max_documents_per_run]
         event_repo.append(
             conn,
             pile_id=pile_id,
@@ -178,6 +205,7 @@ def _invoke(
     state: PileRunState = {
         "pile_id": pile_id,
         "run_id": run_id,
+        "review_pending": False,
         "lease_epoch": epoch,
         "document_ids": document_ids,
         "audit_pass": 1,
@@ -220,8 +248,16 @@ def _invoke(
             conn,
             pile_id=pile_id,
             run_id=run_id,
-            type="run.paused" if paused else "run.finished",
-            payload={"documents": len(document_ids), "remaining": len(remaining)},
+            type="run.paused" if paused else "run.incomplete" if remaining else "run.finished",
+            # What this run spent, so the timeline answers "what did that cost" without
+            # opening the Cost tab. There is no spending limit: calls run, and are counted.
+            payload={
+                "documents": len(document_ids),
+                "remaining": len(remaining),
+                **telemetry_repo.totals_for_run(
+                    conn, pile_id, run_id, priced=prices(settings.model_prices_path)
+                ),
+            },
         )
 
     return RunOutcome(
@@ -232,7 +268,7 @@ def _invoke(
         # Measured against the queue, not assumed from the absence of an exception:
         # a run whose every LLM call failed completes normally and writes nothing,
         # indistinguishable from success unless you look at what's left to do.
-        progressed=len(remaining) < len(document_ids),
+        progressed=bool(set(document_ids) - set(remaining)),
     )
 
 

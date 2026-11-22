@@ -192,9 +192,10 @@ class Settings(BaseSettings):
     for a host run so a worker reads the weights `prefetch_models.py --dir` wrote instead of
     downloading a second copy."""
 
-    # ── budgets ───────────────────────────────────────────────────────────
-    max_llm_cost_usd_per_run: float
-    max_documents_per_run: int
+    # ── run size ──────────────────────────────────────────────────────────
+    # There is deliberately no spending limit: calls run and are counted, and each
+    # run's cost is reported on its closing timeline event and in the Cost tab.
+    max_documents_per_run: int = Field(gt=0)
     small_sample: bool
     """Dev guard: extract only the first N sections of each document."""
     small_sample_sections: int

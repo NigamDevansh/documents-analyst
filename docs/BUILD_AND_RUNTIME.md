@@ -71,7 +71,7 @@ build is 5–10 minutes; every build after that is a couple of minutes.
 `scripts/prefetch_models.py` downloads the NLI cross-encoder and
 GLiNER **at build time** into `/opt/models`, and the runtime stage points
 `HF_HOME` and `HUGGINGFACE_HUB_CACHE` at the same tree. Embeddings used to be a
-third download; they are an OpenAI call now, so there is nothing to bake.
+third download; they now use the OpenAI or Gemini API, so there is nothing to bake.
 
 **One module owns that layout**, `documents_analyst_core/model_cache.py`, and a test
 asserts the Dockerfile's exported variables equal what it computes. That guard
@@ -133,8 +133,8 @@ which quietly breaks the offline promise while appearing to keep it.
 Stage 3 runs `vite build` and the bundle lands at `/app/static`, served by
 FastAPI. One URL, no CORS, one fewer compose service.
 
-A `dev` profile adds a Vite dev server with hot reload for when we are building
-it — but the default path is the one a reviewer takes.
+`make ui` runs the host Vite dev server with hot reload. There is no Compose
+`dev` profile; the built-in bundle is the normal reviewer path.
 
 ---
 
@@ -148,7 +148,7 @@ it — but the default path is the one a reviewer takes.
 | `worker` | ours | `python -m documents_analyst.worker.main` | `full` — scans, ingests, runs the graph, writes each pile's `final-document.docx` |
 | `mcp` | ours | `python -m documents_analyst.mcp.server --transport stdio` | `mcp` |
 | `mcp-http` | ours | the same, `--transport streamable-http`, published to `127.0.0.1:8765` | `mcp-http` |
-| `tests` | ours | `pytest`, with no `env_file` | `full` |
+| `tests` | ours | `pytest`, with no `env_file` | `tests` (explicit selection only) |
 | `pgweb` | `sosedoff/pgweb` | a browser for the database on `:8081` | default |
 
 `docker compose --profile full up` starts the database, `migrate`, `api` and
@@ -258,43 +258,60 @@ are always taken one at a time, in the order they were found
 ([`WORKER_RUNTIME.md`](WORKER_RUNTIME.md) §1a).
 
 If a folder has no `rulebook.yaml`, the pile still works; the audit stage simply
-has no rules to run and produces zero findings.
+has no rules to run and produces zero findings. The name is exact: a
+`rulebook.yml`, `.json` or `.txt` is not applied, and the worker logs a one-time
+warning saying so. OS files (`Thumbs.db`, `desktop.ini`, macOS `Icon\r`) are
+ignored.
 
 ---
 
-## 5. Running with no keys
+## 5. Setup screen and provider selection
 
-`docker compose --profile full up` with an untouched `.env` **starts normally**. Nothing exits,
-nothing crashes. The worker scans and ingests, and runs extraction, conflict
-classification and rulebook audits once its LLM key is set; the dashboard loads
-and names what is missing.
+`make up` with an untouched `.env` **starts normally**. The worker scans and
+ingests files, but the graph waits until both an LLM key and an embedding key
+are configured. The dashboard shows `SetupGate` instead of the workspace.
 
-The dashboard shows a banner; behind it, the API returns the same
-missing-configuration information as structured JSON:
+`GET /health` exposes `setup.ready` and `setup.requirements`: each requirement
+names its purpose, acceptable keys, whether it is met, the selected provider,
+how it was selected, and the model names. It reports key presence, never key
+values. The screen polls this endpoint every four seconds and also offers
+**Check again**. Save credentials in `.env` and rerun `make up` to recreate the
+containers with the new environment; the screen then unlocks automatically.
 
-> **Missing configuration.** `GEMINI_API_KEY` and `OPENAI_API_KEY` are not set.
-> Documents will be scanned and parsed, but fact extraction, adjudication and
-> open-subject matching are disabled. Add them to `.env` and restart.
+| Capability | Automatic selection when the provider setting is blank | Explicit setting |
+|---|---|---|
+| Extraction and judging | Claude if `ANTHROPIC_API_KEY` is set, else Gemini if `GEMINI_API_KEY` is set, else OpenAI | `LLM_PROVIDER=anthropic`, `gemini`, or `openai` |
+| Embeddings | OpenAI if `OPENAI_API_KEY` is set, otherwise Gemini if `GEMINI_API_KEY` is set; defaults to OpenAI when neither is set | `EMBEDDING_PROVIDER=openai` or `gemini` |
 
-| Works without keys | Needs keys |
+One OpenAI key or one Gemini key satisfies both requirements. Claude has no
+embedding model, so a Claude deployment also needs an OpenAI or Gemini key.
+Explicit selection requires that provider's key; another provider's key does
+not silently replace it. Blank model overrides use the selected provider's defaults.
+
+| Works without keys | Waits for both requirements |
 |---|---|
-| Scanning, hashing, settle checks | Fact extraction (LLM) |
-| Parsing to text, chunking | Conflict adjudication (LLM tier 3) |
-| The dashboard, piles, documents | Open-subject matching (embeddings — `OPENAI_API_KEY`) |
-| The whole test suite | The final document — it is written after a run that extracted something |
+| Discovery, hashing, settle checks, parsing and quarantine | Extraction, matching, classification and rulebook audits |
+| Setup screen and health endpoint; API reads remain available subject to `API_TOKEN` | Dashboard workspace |
+| Local restoration of an already recorded final document | The first analysis that supplies sections for a final document |
+| Offline test suite | Live provider tests |
 
-Embeddings run against the **OpenAI API** whatever `LLM_PROVIDER` is, so
-open-subject matching across documents needs `OPENAI_API_KEY` even on a
-Gemini or Anthropic deployment. Taxonomy-keyed facts still match without it;
-only free-subject matching is lost.
+### Prices
 
-Startup validates configuration and reports **everything** missing at once —
-not the first problem, then the next after a restart.
+`config/model_prices.json` converts tokens to dollars for the cost report; it
+never blocks a call and there is no spending limit. A model with no entry costs
+0 and is reported as unpriced. `pricing.price_warnings()` flags the configured
+models (extraction, judge, embeddings) with no price, or a price past or within
+14 days of its `valid_until`; the warnings
+appear on `/health` (`pricing.warnings`), in the worker's startup log and on the
+dashboard's Cost tab. See `config/MODEL_PRICING.md`.
 
-The reasoning: someone who runs `make full-up` before reading the README should
-get a working page that tells them what to do. A container that exits
-immediately reads as "this is broken", and failing at the first LLM call buries
-the cause in worker logs minutes later.
+### Embeddings
+
+Embeddings use `text-embedding-3-small` or `gemini-embedding-001`, requested at
+384 dimensions for the database's `vector(384)` column. Gemini vectors are
+normalised locally and its token usage is estimated. They are remote API calls,
+separate from the two baked local models. See [`CORE_INTERNALS.md`](CORE_INTERNALS.md)
+for provider changes and stored vector compatibility.
 
 ---
 
@@ -349,9 +366,8 @@ make logs        docker compose logs -f worker
 and a running worker will commit it. That is deliberate: it is the same door the
 dashboard and the MCP server use, not a read-only tour.
 
-**One trap worth knowing about.** `make run` reuses whatever worker image
-exists — only `make test` passes `--build`. After changing worker code, rebuild
-first, or you will watch old code do nothing convincingly.
+`make run` and `make test` both pass `--build`, so they rebuild changed source
+before launching their one-shot container.
 
 **A pile's `watch_path` is recorded by whoever discovered it.** A pile first
 scanned inside the container holds `/data/watched/acme`, which a host-run API

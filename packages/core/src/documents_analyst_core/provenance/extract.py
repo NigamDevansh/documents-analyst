@@ -77,6 +77,11 @@ class ExtractionResult:
     attempts: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    failed_sections: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return self.failed_sections == 0
 
     @property
     def rejection_rate(self) -> float:
@@ -101,7 +106,7 @@ def extract_facts(
     schema = extraction_schema()
     facts: list[GroundedFact] = []
     rejected: list[Rejection] = []
-    seen = attempts = sent = got = 0
+    seen = attempts = sent = got = failed = 0
 
     for section in list(sections)[:max_sections]:
         body = text[section.start : section.end]
@@ -121,6 +126,7 @@ def extract_facts(
                 system=system, user=user, schema=schema, max_tokens=MAX_TOKENS
             )
         except LLMError as exc:
+            failed += 1
             # One unusable section must not lose the whole document. It is
             # recorded as a rejection so the count cannot be mistaken for a
             # section that simply stated nothing.
@@ -140,7 +146,7 @@ def extract_facts(
                     Rejection(str(raw.get("field_key", "")), str(raw.get("source_quote", "")), why)
                 )
 
-    return ExtractionResult(facts, rejected, seen, attempts, sent, got)
+    return ExtractionResult(facts, rejected, seen, attempts, sent, got, failed)
 
 
 def ground_fact(

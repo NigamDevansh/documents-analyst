@@ -1,8 +1,9 @@
 # Code Architecture
 
-How the code is organised, and why. This is the *engineering* companion to
-the [`README`](../README.md), which covers the *system* — the flows, gates and
-schema. Nothing here changes that; it decides how it gets built.
+How the code is organised, and why. The [`README`](../README.md) has the
+high-level and architecture diagrams; the flows, gates and schema are in
+[`BACKEND_INTERNALS.md`](BACKEND_INTERNALS.md) and
+[`WORKER_RUNTIME.md`](WORKER_RUNTIME.md). This decides how it gets built.
 
 Written phase by phase. Phase 1 below.
 
@@ -34,13 +35,14 @@ the coroutine.* One pile runs under one lease. Inside a pile the pipeline is
 inherently sequential — you cannot classify before you extract — and the files
 of one pile are ingested and extracted one at a time, in discovery order.
 Parallelism across piles comes from two places, both plain threads and
-processes rather than an event loop: each worker runs up to `pile_concurrency`
-piles at once on a small thread pool, one lane per pile (default 3; 1 restores
+processes rather than an event loop: each worker's graph-drain thread runs up to
+`pile_concurrency` piles at once on a small thread pool, while discovery carries
+on in the main loop, one lane per pile (default 3; 1 restores
 one pile after another), and you can run more worker processes. Lanes and
 processes are kept apart by the same `FOR UPDATE SKIP LOCKED` claim and fenced
 lease, so a lane is just a worker that happens to share an address space. What
-the lanes share — the checkpointer, the LLM client, the embeddings client and
-the two local models — is made safe once, in `models.shared_across_threads` and
+the lanes share — the checkpointer, the extraction and judge LLM clients, the
+embeddings client and the two local models — is made safe once, in `models.shared_across_threads` and
 a thread-local `last_usage`; see [`WORKER_RUNTIME.md`](WORKER_RUNTIME.md) §1a.
 Async would buy the worker nothing and cost it real complexity.
 
@@ -187,10 +189,10 @@ method each:
 
 | Feature | Gemini | Anthropic | OpenAI |
 |---|---|---|---|
-| Structured output | `response_json_schema` | tool with `input_schema`, forced via `tool_choice` | `response_format={"type":"json_schema", …, "strict": true}` |
+| Structured output | `response_json_schema` | native `output_config.format` JSON schema | `response_format={"type":"json_schema", …, "strict": true}` |
 | Usage | normalised from Gemini usage metadata | `response.usage.input_tokens / output_tokens` | `response.usage.prompt_tokens / completion_tokens` |
 
-Both normalise into one `Usage` dataclass, so `telemetry` and the cost widget
+All three normalise into one `Usage` dataclass, so `telemetry` and the cost widget
 never branch on provider.
 
 **Retries are ours.** Bounded, and *every attempt* is recorded — including the
@@ -300,6 +302,9 @@ Two things stay in Postgres because a log file genuinely cannot serve them:
 Two workers appending to one file also interleave; Postgres handles concurrent
 writes correctly.
 
+Cost is reported, never enforced: there is no spending limit, and a model with
+no price in `config/model_prices.json` still runs and is reported as unpriced.
+
 **`stage_runs` stays a real table** (rather than a view over `stage_events`) for
 typed columns and simpler aggregation. That accepts a real redundancy — the same
 numbers exist in two places — so one discipline closes it:
@@ -361,9 +366,9 @@ in the Dockerfile means the reviewer builds exactly what we built.
 | `httpx>=0.27` | `backend/.../mcp/api.py` (the MCP server's client for our own API) | Declared in core, though only the backend imports it; the MCP tests drive it over `httpx.ASGITransport`, so they need no socket |
 | `pdfplumber>=0.11` | `portable/document_text.py` | Good text ordering on contracts. **PyMuPDF rejected — AGPL**, wrong licence to ship |
 | `jsonschema>=4.22` | `portable/llm_client.py` | Structured LLM output is checked by us, not taken on the vendor's word |
-| `google-genai>=1.0` | `portable/llm_client.py` | Default provider — `response_json_schema` |
-| `anthropic>=0.34` | `portable/llm_client.py` | Tool-use forced schema |
-| `openai>=1.40` | `portable/llm_client.py`, `embeddings/` | `json_schema` strict mode; and `text-embedding-3-small`, which is why this one is needed whatever `LLM_PROVIDER` says |
+| `google-genai>=1.0` | `portable/llm_client.py`, `embeddings/gemini_embeddings.py` | Gemini structured output and embeddings |
+| `anthropic>=0.34` | `portable/llm_client.py` | Native `output_config.format` JSON schema |
+| `openai>=1.40` | `portable/llm_client.py`, `embeddings/openai_embeddings.py` | OpenAI structured output and embeddings; API credentials are optional when using other providers |
 
 Six entries were removed from this table in the dead-code sweep, and the reason
 is worth keeping: **a dependency table is a claim about what the code does.**
@@ -428,7 +433,7 @@ offline promise. First build runs ~5–10 minutes; every build after that is cac
 
 | Model | Size | Runtime | Used for |
 |---|---|---|---|
-| `text-embedding-3-small` | — | **OpenAI API**, asked for at 384 dimensions | Fact-key embeddings — matching open subjects across documents. The only model here that is not local, and the only one that bills per call |
+| `text-embedding-3-small` or `gemini-embedding-001` | remote | OpenAI or Gemini API, requested at 384 dimensions | Fact-key embeddings for matching open subjects; selected independently of the LLM provider |
 | `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` | ~184M | transformers + torch | Tier 2 of the conflict classifier — prose pairs only |
 | `knowledgator/gliner-pii-base-v1.0` | ~300M | gliner + torch | Party candidates (preamble only) |
 | `LLM_MODEL_EXTRACT` | remote | provider SDK | Fact extraction per section — **the bulk of spend** |
@@ -479,17 +484,23 @@ or pretend to work.
 `.env.example` stays intentionally small: credentials and per-deployment model
 choices only.
 
-Genuinely required: `LLM_PROVIDER` (a closed
-`Literal["gemini","anthropic","openai"]`, so a typo is rejected at startup
-rather than silently taking the wrong provider path), that provider's key, and
-`OPENAI_API_KEY` for embeddings whichever provider is chosen.
+Two capabilities are required: an LLM key and an embedding key. With
+`LLM_PROVIDER` blank, selection follows the available keys: Anthropic, then
+Gemini, then OpenAI. An explicit `anthropic`, `gemini`, or `openai` value pins
+the provider and requires its key; invalid values fail startup validation.
 
-**Gemini is the default provider.** With both model settings blank it uses
-`gemini-3.6-flash` for extraction and judging. That id was checked against the
-provider's own model listing — it is offered and supports `generateContent`,
-which is what the portable interface's `structured()` needs. `LLM_MODEL_EXTRACT`
-and `LLM_MODEL_JUDGE` override it for a pinned deployment. OpenAI and Anthropic
-remain supported explicit fallbacks with their own defaults.
+Embedding selection is independent. Blank `EMBEDDING_PROVIDER` chooses OpenAI
+when `OPENAI_API_KEY` is present, otherwise Gemini when its key is present.
+With neither key present, OpenAI is the default and the requirement stays unmet. One OpenAI or Gemini key
+covers both capabilities. Claude requires an additional OpenAI or Gemini key
+because it has no embedding model. `EMBEDDING_MODEL` overrides the provider
+default (`text-embedding-3-small` or `gemini-embedding-001`).
+
+The dashboard blocks the workspace with a setup screen until
+`/health` reports `setup.ready`. Its requirements list key presence, selection
+reasons and model names without exposing credentials; it polls every four
+seconds. After saving `.env`, rerun `make up` to reload the containers.
+The worker still discovers and ingests while keys are missing.
 
 Loaded once via `pydantic-settings` into a frozen application `Settings` object.
 Application behaviour reads those injected settings; the portable model-cache
@@ -498,10 +509,12 @@ environment variables so they can also run outside this application. Every
 application knob remains typed, defaulted and discoverable in one file.
 
 Model ids (`LLM_MODEL_EXTRACT`, `LLM_MODEL_JUDGE`) are left blank in the example
-so the tested Gemini defaults apply; set them only when pinning a deployment.
+so the selected provider's defaults apply; set them only when pinning a deployment.
 
-**The test suite requires none of it.** `docker compose run --rm worker pytest`
-runs with an empty `.env`.
+**The offline test suite requires no API keys.** The compose `tests` service
+does not load `.env`. Integration fixtures create and truncate their own scratch
+databases on the configured server; they leave the application database intact.
+See [`TESTING.md`](TESTING.md) for concurrent-suite isolation.
 
 ---
 

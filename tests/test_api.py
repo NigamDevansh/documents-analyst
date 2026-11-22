@@ -17,11 +17,13 @@ import os
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from review_helpers import seed_options
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -46,7 +48,7 @@ from documents_analyst_core.provenance.models import Citation, GroundedFact
 
 pytestmark = pytest.mark.db
 
-SCRATCH = "analyst_api_test"
+SCRATCH = "analyst_api_test_" + uuid.uuid4().hex[:12]
 
 CONTRACT = """MASTER SERVICES AGREEMENT
 
@@ -180,10 +182,16 @@ def raise_item(engine: Engine, pile_id: str, kind: str, **kwargs: Any) -> str:
     """
     if kind in ("conflict", "amendment"):
         kwargs.setdefault("payload", {"field_key": "payment_terms_days", "options": OPTIONS})
+        if kind == "amendment":
+            kwargs["payload"].setdefault("recommended_value_group", 1)
     with held(engine, pile_id) as fence, engine.begin() as conn:
-        item = decision_repo.raise_decision(
-            conn, fence, kind=kind, ref_id=str(uuid.uuid4()), **kwargs
+        kwargs = deepcopy(kwargs)
+        ref_id = (
+            seed_options(conn, fence, kwargs["payload"].get("options", []))
+            if kind in ("conflict", "amendment")
+            else str(uuid.uuid4())
         )
+        item = decision_repo.raise_decision(conn, fence, kind=kind, ref_id=ref_id, **kwargs)
     assert item is not None
     return item
 
@@ -213,7 +221,7 @@ def test_piles_lists_counts_without_multiplying_them(
 
     body = client.get("/piles").json()
     row = next(p for p in body["piles"] if p["id"] == pile_id)
-    assert (row["documents"], row["pending_decisions"]) == (2, 3)
+    assert (row["documents"], row["pending_decisions"]) == (8, 3)
 
 
 def test_a_pile_with_no_documents_still_appears(
@@ -320,6 +328,48 @@ def test_upload_to_an_unknown_pile_is_refused(client: TestClient) -> None:
         f"/piles/{uuid.uuid4()}/documents", files={"file": ("x.md", b"x", "text/markdown")}
     )
     assert response.status_code == 404
+
+
+def test_unsupported_upload_is_refused_before_writing(
+    client: TestClient, engine: Engine, tmp_path: Path
+) -> None:
+    pile_id, folder = make_pile(engine, tmp_path)
+    response = client.post(
+        f"/piles/{pile_id}/documents",
+        files={"file": ("legacy.doc", b"unsupported", "application/msword")},
+    )
+    assert response.status_code == 415
+    assert not (folder / "legacy.doc").exists()
+
+
+def test_approval_refuses_sources_superseded_since_the_question_was_raised(
+    client: TestClient, engine: Engine, tmp_path: Path
+) -> None:
+    pile_id, _ = make_pile(engine, tmp_path)
+    item = raise_item(engine, pile_id, "conflict")
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE facts_and_claims SET status='superseded' WHERE value_group=1"))
+    response = client.post(
+        f"/decisions/{item}/approve",
+        json={"chosen_value_group": 1},
+        headers={"X-Actor": "Reviewer"},
+    )
+    assert response.status_code == 409
+    assert "sent back to be checked again" in response.json()["detail"]
+    with engine.connect() as conn:
+        # Never approved — and no longer stuck pending, which nobody could ever approve:
+        # withdrawn, with a sources change recorded so the field is asked about afresh.
+        assert decision_repo.get(conn, item)["status"] == "superseded"
+        assert (
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM stage_events WHERE pile_id=:p "
+                    "AND type='run.sources_changed' AND payload->>'decision_id'=:d"
+                ),
+                {"p": pile_id, "d": str(item)},
+            ).scalar_one()
+            == 1
+        )
 
 
 # ── the human gate's only door ────────────────────────────────────────────

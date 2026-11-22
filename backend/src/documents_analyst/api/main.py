@@ -36,6 +36,7 @@ from documents_analyst.api.routes import (
 )
 from documents_analyst.db.dsn import psycopg_dsn
 from documents_analyst.models import cache_status
+from documents_analyst.pricing import price_warnings
 from documents_analyst.settings import Settings, get_settings
 
 LOG = logging.getLogger(__name__)
@@ -125,6 +126,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # (`WATCH_DIR` on the host, not `/data/watched` inside the container).
             # The full key list with a set/missing flag each — never a value.
             "setup": settings.key_checklist(),
+            # Prices never block a call; these only say where the cost report is
+            # unpriced or using a price past its `valid_until`.
+            "pricing": {"warnings": price_warnings(settings)},
             "watch": {
                 "path": settings.watch_dir_host or str(settings.watch_root),
                 "deliverable_filename": settings.deliverable_filename,

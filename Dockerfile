@@ -100,8 +100,8 @@ WORKDIR /app
 # The venv comes from BUILDER (deps + our two workspace packages); the weights
 # come from MODELS. Two sources, because only one of them should ever be
 # rebuilt by a code change.
-COPY --from=builder /app/.venv /app/.venv
-COPY --from=models /opt/models /opt/models
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+COPY --from=models --chown=app:app /opt/models /opt/models
 # Served by FastAPI at the same origin as the API — no CORS, no iframe.
 COPY --from=frontend /ui/dist /app/static
 COPY pyproject.toml ./
@@ -123,7 +123,9 @@ COPY tests/ tests/
 
 # `watched/` holds the sources and, at each pile's root, the generated
 # final-document.docx — the one file the system writes there.
-RUN mkdir -p /data/watched && chown -R app:app /data /app /opt/models
+# Keep ownership changes in the cached dependency COPY layers. Re-chowning all
+# weights after every source edit duplicated gigabytes and slowed each rebuild.
+RUN mkdir -p /data/watched && chown app:app /data /data/watched /app
 
 USER app
 

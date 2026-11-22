@@ -304,7 +304,9 @@ class GeminiClient(_RetryingClient):
     def _client(self) -> Any:
         from google import genai
 
-        return genai.Client(api_key=self._api_key)
+        return genai.Client(
+            api_key=self._api_key, http_options={"timeout": 60000, "retry_options": {"attempts": 1}}
+        )
 
     def _call(
         self, *, system: str, user: str, max_tokens: int, schema: dict[str, Any] | None
@@ -363,7 +365,7 @@ class AnthropicClient(_RetryingClient):
     def _client(self) -> Any:
         import anthropic
 
-        return anthropic.Anthropic(api_key=self._api_key)
+        return anthropic.Anthropic(api_key=self._api_key, max_retries=0, timeout=60.0)
 
     @classmethod
     def claude_schema(cls, schema: dict[str, Any]) -> dict[str, Any]:
@@ -441,7 +443,7 @@ class OpenAIClient(_RetryingClient):
     def _client(self) -> Any:
         import openai
 
-        return openai.OpenAI(api_key=self._api_key)
+        return openai.OpenAI(api_key=self._api_key, max_retries=0, timeout=60.0)
 
     @classmethod
     def strict_schema(cls, schema: dict[str, Any]) -> dict[str, Any]:

@@ -8,7 +8,7 @@ import type { Citation, DocumentText } from "../api/types";
  * highlight is drawn by offset, never by searching for the quote — a contract
  * that says "Net 30" four times would otherwise light the wrong one.
  *
- * See README.md § "The dashboard".
+ * See docs/UI_AND_LINKING.html.
  */
 export function SourcePane({
   document: doc,
@@ -39,7 +39,7 @@ export function SourcePane({
     // After paint, so the element has been laid out and the smooth scroll has
     // somewhere to go.
     const id = requestAnimationFrame(() =>
-      node.scrollIntoView({ behavior: "smooth", block: "center" }),
+      node.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" }),
     );
     return () => cancelAnimationFrame(id);
   }, [citation?.id, doc?.id, loading, focus]);

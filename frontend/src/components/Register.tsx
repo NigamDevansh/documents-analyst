@@ -6,7 +6,7 @@ import type { Citation, Register as RegisterData, Slot } from "../api/types";
  * A disputed term shows every value and no answer, not the first with a warning:
  * a skimming reader would otherwise carry away a number nobody chose.
  *
- * See README.md § "The dashboard".
+ * See docs/UI_AND_LINKING.html.
  */
 export function Register({
   data,

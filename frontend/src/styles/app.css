@@ -1,5 +1,30 @@
 @import "./tokens.css";
 
+/* `.shell >` outranks `.btn`, which is declared later with display: inline-flex. */
+.shell > .mobile-nav { display: none; }
+
+@media (max-width: 800px) {
+  .shell { grid-template-columns: minmax(0, 1fr) !important; height: 100dvh !important; }
+  .shell > .mobile-nav { display: inline-flex; position: fixed; top: 8px; right: 12px; z-index: 60; background: var(--paper-raised); }
+  .shell > .rail { display: none; }
+  .shell[data-navigation-open="true"] > .rail { display: flex; position: fixed; inset: 0 auto 0 0; width: min(85vw, 320px); z-index: 50; box-shadow: var(--shadow-3); }
+  .main { min-width: 0; }
+  .main > .topbar { padding-top: 52px; flex-wrap: wrap; gap: 8px; }
+  .topbar h1 { overflow-wrap: anywhere; }
+  .main > .split { flex-direction: column; overflow: auto; }
+  .split > .split__pane { flex: 1 0 auto !important; flex-basis: auto !important; overflow: visible; width: 100%; }
+  .split > .split__handle { display: none; }
+  .split .source { min-height: 200px; max-height: 45dvh; border-top: 1px solid var(--rule); }
+  .main .tabs { overflow-x: auto; flex-shrink: 0; }
+  .grid-2 { grid-template-columns: minmax(0, 1fr) !important; }
+  .card__body { overflow-x: auto; }
+  .welcome__card { max-height: 90dvh; overflow-y: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; }
+}
+
 *,
 *::before,
 *::after {

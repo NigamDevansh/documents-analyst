@@ -1,11 +1,8 @@
 """Token counts → dollars.
 
-Prices are loaded from config, not hardcoded — a stale hardcoded price is a
-confidently wrong cost report, worse than none. The shipped table is empty on
-purpose: per-token rates change without notice and cannot be verified from here,
-so an unknown model costs `Decimal(0)` and reports as unpriced ("1.2M tokens,
-unpriced") rather than a plausible wrong figure. Tokens and ops are measured
-exactly; dollars are a conversion the operator supplies.
+Prices are loaded from configuration and only convert tokens to dollars for the
+cost report — they never stop a call. A model with no rate is reported as
+unpriced, never as free. Dollar figures are estimates rather than provider invoices.
 
     prices = load_prices(Path("config/model_prices.json"))
     cost = cost_usd("gemini-3.6-flash", 1200, 340, prices=prices)
@@ -64,14 +61,16 @@ def load_prices(path: Path) -> dict[str, tuple[Decimal, Decimal]]:
     a cost report is arithmetic someone may check against an invoice. `Decimal`
     from a string is exact.
 
-    A missing file is an empty table, not an error — running unpriced is a
-    supported state, and refusing to start because nobody filled in a price
-    would stop a pile for a reporting detail.
+    A missing file is an empty reporting table: every call is then reported as
+    unpriced, and nothing is blocked.
     """
     if not path.is_file():
         return {}
     raw = json.loads(path.read_text())
-    return {
+    parsed = {
         model: (Decimal(str(rate["input"])), Decimal(str(rate["output"])))
         for model, rate in raw.items()
     }
+    if any(not amount.is_finite() or amount < 0 for rates in parsed.values() for amount in rates):
+        raise ValueError("Model prices must be finite, non-negative USD rates")
+    return parsed

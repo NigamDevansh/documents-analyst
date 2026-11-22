@@ -1,1 +1,8 @@
-{}
+{
+  "gpt-4o": {"input": "2.50", "output": "10.00"},
+  "gpt-4o-mini": {"input": "0.15", "output": "0.60"},
+  "text-embedding-3-small": {"input": "0.02", "output": "0"},
+  "gemini-3.6-flash": {"input": "0.75", "output": "3.75", "valid_until": "2026-12-31"},
+  "gemini-embedding-001": {"input": "0.15", "output": "0"},
+  "claude-haiku-5-5": {"input": "0.50", "output": "2.50"}
+}

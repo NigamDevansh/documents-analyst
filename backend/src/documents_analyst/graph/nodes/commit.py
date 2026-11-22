@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -45,6 +46,7 @@ from langchain_core.runnables import RunnableConfig
 from documents_analyst import deliverable
 from documents_analyst.db.repo import commits as commit_repo
 from documents_analyst.db.repo import decisions as decision_repo
+from documents_analyst.db.repo import documents as document_repo
 from documents_analyst.db.repo import events as event_repo
 from documents_analyst.db.repo import slots as slot_state
 from documents_analyst.deliverable import Section
@@ -81,8 +83,16 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
     pile_id = state["pile_id"]
     fence = Fence(pile_id=pile_id, epoch=state["lease_epoch"])
 
+    ctx.renew_lease(fence)
     with ctx.engine.begin() as conn:
+        # Hold the pile row across validation, application, and publication.
+        commit_repo.lock_for_write(conn, fence)
         approved = decision_repo.approved_undecided(conn, pile_id)
+        stale = [item for item in approved if not decision_repo.evidence_current(conn, item)]
+        for item in stale:
+            decision_repo.refresh_stale(conn, fence, item)
+        if stale:
+            return {"review_pending": True}
         before = {s.slot_id: s for s in slot_repo.for_pile(conn, pile_id)}
 
         # Apply what was decided BEFORE reading the slots we render: an approved conflict
@@ -98,6 +108,42 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
         record = commit_repo.recorded(conn, pile_id)
         previous = deliverable.recorded_sections(record["deliverable_sections"])
         sections = deliverable.sections_for(slots)
+        inventory = document_repo.for_pile(conn, pile_id)
+        lines = [
+            "Coverage reflects the files discovered for this analysis. A verified quote proves its source text, not that every material term was identified. Human completeness review is required."
+        ]
+        for source in inventory:
+            paths = []
+            for raw in sorted(source.get("paths") or {}):
+                try:
+                    paths.append(
+                        str(Path(raw).relative_to(ctx.settings.watch_root / str(record["name"])))
+                    )
+                except ValueError:
+                    paths.append(Path(raw).name)
+            label = "; ".join(paths) or source["filename"]
+            warning = ""
+            if source["status"] == "quarantined":
+                warning = " — NOT ANALYSED: " + str(
+                    source.get("quarantine_error") or "unreadable source"
+                )
+            elif source.get("text_length") == 0:
+                warning = " — NO READABLE TEXT: scanned PDFs may require OCR"
+            elif source.get("alias_of_document_id"):
+                warning = " — duplicate text, represented by its canonical source"
+            lines.append(f"{label} [{source['status']}; SHA-256 {source['sha256']}]" + warning)
+        if ctx.settings.small_sample:
+            lines.insert(
+                0, "WARNING: sample mode was enabled; only a subset of sections was analysed."
+            )
+        sections.append(
+            Section(
+                slot_id="",
+                agreement="Analysis coverage",
+                heading="Source inventory and limitations",
+                body="\n".join(lines),
+            )
+        )
         document_sha = deliverable.document_sha256(sections)
         path = deliverable.path_for(ctx.settings, str(record["name"]))
         first_write = int(record["deliverable_version"] or 0) == 0
@@ -106,7 +152,6 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
         version = int(record["deliverable_version"] or 0)
         written = first_write or document_sha != record["deliverable_sha256"]
         if written:
-            ctx.renew_lease(fence)
             commit_repo.lock_for_write(conn, fence)
             deliverable.write(path, title=render.title(str(record["name"])), sections=sections)
             version = commit_repo.publish(
@@ -129,6 +174,9 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
                 document_sha256=document_sha,
             )
 
+        event_repo.append(
+            conn, pile_id=pile_id, run_id=state["run_id"], type="run.coverage_updated", payload={}
+        )
         flagged = _ask_about_orphans(conn, fence, orphans)
         ctx.telemetry.flush(conn)
 
@@ -196,7 +244,7 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
         len(sections),
         len(approved),
     )
-    return {}
+    return {"review_pending": False}
 
 
 def _diff(previous: list[Section], current: list[Section]) -> SectionDiff:

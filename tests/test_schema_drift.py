@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import uuid
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
@@ -30,7 +31,7 @@ from documents_analyst.db.tables import TABLE_COUNT, metadata
 
 pytestmark = pytest.mark.db
 
-SCRATCH = "analyst_schema_drift_test"
+SCRATCH = "analyst_schema_drift_test_" + uuid.uuid4().hex[:12]
 
 
 def admin_url() -> str | None:

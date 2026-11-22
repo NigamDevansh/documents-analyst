@@ -26,8 +26,9 @@ export interface Piece {
  * clamped position would quietly point at the wrong words.
  */
 export function cut(text: string, spans: Span[]): Piece[] {
+  const points = Array.from(text);
   const valid = spans
-    .filter((s) => s.start >= 0 && s.end <= text.length && s.end > s.start)
+    .filter((s) => s.start >= 0 && s.end <= points.length && s.end > s.start)
     .sort((a, b) => a.start - b.start);
 
   const merged: Span[] = [];
@@ -40,17 +41,18 @@ export function cut(text: string, spans: Span[]): Piece[] {
   const pieces: Piece[] = [];
   let cursor = 0;
   for (const span of merged) {
-    if (span.start > cursor) pieces.push({ text: text.slice(cursor, span.start), marked: false });
-    pieces.push({ text: text.slice(span.start, span.end), marked: true });
+    if (span.start > cursor) pieces.push({ text: points.slice(cursor, span.start).join(""), marked: false });
+    pieces.push({ text: points.slice(span.start, span.end).join(""), marked: true });
     cursor = span.end;
   }
-  if (cursor < text.length) pieces.push({ text: text.slice(cursor), marked: false });
+  if (cursor < points.length) pieces.push({ text: points.slice(cursor).join(""), marked: false });
   return pieces;
 }
 
 /** Which line a character offset falls on, 1-based — for "line 42" in the bar. */
 export function lineOf(text: string, offset: number): number {
+  const points = Array.from(text);
   let line = 1;
-  for (let i = 0; i < Math.min(offset, text.length); i++) if (text[i] === "\n") line++;
+  for (let i = 0; i < Math.min(offset, points.length); i++) if (points[i] === "\n") line++;
   return line;
 }

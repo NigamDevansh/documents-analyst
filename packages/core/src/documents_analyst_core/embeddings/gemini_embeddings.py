@@ -73,7 +73,10 @@ class GeminiEmbeddings:
                 from google import genai
             except Exception as exc:  # noqa: BLE001 — package missing
                 raise EmbeddingUnavailable(model=self.model_name, detail=str(exc)) from exc
-            self._client = genai.Client(api_key=self._api_key)
+            self._client = genai.Client(
+                api_key=self._api_key,
+                http_options={"timeout": 60000, "retry_options": {"attempts": 1}},
+            )
         return self._client
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:

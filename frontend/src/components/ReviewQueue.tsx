@@ -8,7 +8,7 @@ import type { DecisionItem } from "../api/types";
  * its evidence — a queue you must click through to read is one people approve
  * without reading.
  *
- * See README.md § "The dashboard".
+ * See docs/UI_AND_LINKING.html.
  */
 export function ReviewQueue({
   items,
@@ -121,6 +121,17 @@ function Card({
                 whileTap={{ scale: 0.995 }}
                 role="radio"
                 aria-checked={picked === option.value_group}
+                tabIndex={picked === option.value_group || (picked === null && option === options[0]) ? 0 : -1}
+                onKeyDown={(event) => {
+                  const index = options.indexOf(option);
+                  const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+                    : event.key === "ArrowRight" || event.key === "ArrowDown" ? (index + 1) % options.length
+                    : event.key === "ArrowLeft" || event.key === "ArrowUp" ? (index + options.length - 1) % options.length : -1;
+                  if (next < 0) return;
+                  const chosen = options[next]; if (!chosen) return;
+                  event.preventDefault(); setPicked(chosen.value_group);
+                  event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+                }}
               >
                 <span className="choice__radio">
                   <AnimatePresence>

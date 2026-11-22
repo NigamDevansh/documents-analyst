@@ -35,7 +35,9 @@ def path_map(conn: Connection, pile_id: str) -> dict[str, tuple[int, int, int]]:
     per scan so the inner loop is memory comparisons — per-file queries would make a
     500-document pile 500 round trips to decide nothing changed."""
     rows = conn.execute(
-        text("SELECT paths FROM documents WHERE pile_id = :pile_id AND status <> 'removed'"),
+        text(
+            "SELECT paths FROM documents WHERE pile_id = :pile_id AND status NOT IN ('removed', 'superseded') ORDER BY updated_at"
+        ),
         {"pile_id": pile_id},
     ).all()
     out: dict[str, tuple[int, int, int]] = {}
@@ -68,7 +70,7 @@ def by_text_sha(conn: Connection, pile_id: str, text_sha: str) -> dict[str, Any]
         text(
             "SELECT id, filename FROM documents "
             "WHERE pile_id = :pile_id AND text_sha256 = :text_sha "
-            "AND alias_of_document_id IS NULL AND status <> 'removed' "
+            "AND alias_of_document_id IS NULL AND status IN ('ingested', 'extracted') "
             "ORDER BY created_at LIMIT 1"
         ),
         {"pile_id": pile_id, "text_sha": text_sha},
@@ -164,7 +166,16 @@ def restore(conn: Connection, fence: Fence, document_id: str) -> None:
         text(
             "UPDATE documents SET status = CASE WHEN extracted_text IS NULL "
             "THEN 'queued' ELSE 'ingested' END, updated_at = now() "
-            f"WHERE id = :id AND status = 'removed' AND {HOLDS_LEASE}"
+            f"WHERE id = :id AND status IN ('removed', 'superseded') AND {HOLDS_LEASE}"
+        ),
+        {"id": document_id, "pile_id": fence.pile_id, "epoch": fence.epoch},
+    )
+
+    conn.execute(
+        text(
+            "UPDATE facts_and_claims SET status = 'active' "
+            "WHERE source_document_id = :id AND status = 'superseded' "
+            f"AND {HOLDS_LEASE}"
         ),
         {"id": document_id, "pile_id": fence.pile_id, "epoch": fence.epoch},
     )
@@ -230,7 +241,7 @@ def promote_orphaned_aliases(conn: Connection, fence: Fence) -> int:
             "SELECT a.id, a.alias_of_document_id AS parent FROM documents a "
             "JOIN documents o ON o.id = a.alias_of_document_id "
             "WHERE a.pile_id = :pile_id AND a.status NOT IN ('removed', 'superseded') "
-            "AND o.status = 'removed' ORDER BY a.created_at"
+            "AND o.status IN ('removed', 'superseded') ORDER BY a.created_at"
         ),
         {"pile_id": fence.pile_id},
     ).all()
@@ -249,6 +260,13 @@ def promote_orphaned_aliases(conn: Connection, fence: Fence) -> int:
                 f"updated_at = now() WHERE id = :id AND {HOLDS_LEASE}"
             ),
             {"id": heir, "pile_id": fence.pile_id, "epoch": fence.epoch},
+        )
+        conn.execute(
+            text(
+                "UPDATE facts_and_claims SET status = 'active' WHERE source_document_id = :heir "
+                f"AND status = 'superseded' AND {HOLDS_LEASE}"
+            ),
+            {"heir": heir, "pile_id": fence.pile_id, "epoch": fence.epoch},
         )
         conn.execute(
             text(
@@ -320,6 +338,48 @@ def set_extraction_ok(conn: Connection, fence: Fence, document_id: str, *, ok: b
     )
 
 
+EXTRACTION_FAILED_PREFIX = "extraction failed"
+"""How a `quarantine_error` marks a file that was READ but whose model extraction kept
+failing — as opposed to one that could not be parsed. Retry re-queues only these: the
+bytes of an unparseable file have not changed, so trying it again cannot help."""
+
+
+def record_extraction_failure(
+    conn: Connection,
+    fence: Fence,
+    document_id: str,
+    *,
+    reason: str,
+    max_attempts: int,
+) -> bool:
+    """Count an incomplete extraction as an attempt; quarantine on the last one.
+
+    Without this a section that always fails (truncated JSON on a dense clause, a
+    refusal) left the document `ingested` for ever: re-claimed every scan, every
+    section paid for again, and the pile never reaching review. After `max_attempts`
+    the file is quarantined with the reason, the rest of the pile carries on, and the
+    final document lists it as not analysed. Returns whether it was quarantined."""
+    row = conn.execute(
+        text(
+            "UPDATE documents SET extraction_ok = false, attempts = attempts + 1, "
+            "  status = CASE WHEN attempts + 1 >= :max THEN 'quarantined' ELSE status END, "
+            "  quarantine_error = CASE WHEN attempts + 1 >= :max THEN :error "
+            "                     ELSE quarantine_error END, "
+            "  updated_at = now() "
+            f"WHERE id = :id AND status = 'ingested' AND {HOLDS_LEASE} "
+            "RETURNING status"
+        ),
+        {
+            "id": document_id,
+            "max": max_attempts,
+            "error": f"{EXTRACTION_FAILED_PREFIX} after {max_attempts} attempts: {reason}"[:1000],
+            "pile_id": fence.pile_id,
+            "epoch": fence.epoch,
+        },
+    ).first()
+    return bool(row is not None and row.status == "quarantined")
+
+
 def extraction_incomplete(conn: Connection, agreement_id: str) -> list[str]:
     """Filenames in this agreement whose extraction failed outright. Empty is the answer
     that lets absence-based rules run: every document was read, so a term not in the
@@ -359,7 +419,7 @@ def for_pile(conn: Connection, pile_id: str) -> list[dict[str, Any]]:
             "alias_of_document_id, supersedes_document_id, quarantine_error, paths, "
             "length(extracted_text) AS text_length, created_at, updated_at "
             "FROM documents WHERE pile_id = :pile_id "
-            "ORDER BY filename"
+            "ORDER BY filename, created_at, id"
         ),
         {"pile_id": pile_id},
     ).all()
@@ -388,3 +448,86 @@ def counts(conn: Connection, pile_id: str) -> dict[str, int]:
         {"pile_id": pile_id},
     ).all()
     return {row.status: int(row.n) for row in rows}
+
+
+def reconcile_path(
+    conn: Connection, fence: Fence, path: str, keep: set[str], present: set[str], complete: bool
+) -> int:
+    """A path can hold one byte identity. Retain copies at other real paths."""
+    rows = conn.execute(
+        text(
+            "SELECT id, paths FROM documents WHERE pile_id = :pile_id AND paths ? :path "
+            "AND status NOT IN ('removed', 'superseded')"
+        ),
+        {"pile_id": fence.pile_id, "path": path},
+    ).all()
+    superseded = 0
+    for row in rows:
+        if str(row.id) in keep:
+            continue
+        others = set(row.paths or {}) - {path}
+        if not others or (complete and not (others & present)):
+            mark_superseded(conn, fence, str(row.id))
+            superseded += 1
+        else:
+            conn.execute(
+                text(
+                    f"UPDATE documents SET paths = paths - :path WHERE id = :id AND {HOLDS_LEASE}"
+                ),
+                {"id": row.id, "path": path, "pile_id": fence.pile_id, "epoch": fence.epoch},
+            )
+    return superseded
+
+
+def restore_as_alias(conn: Connection, fence: Fence, document_id: str, canonical: str) -> None:
+    conn.execute(
+        text(
+            "UPDATE documents SET status = 'ingested', alias_of_document_id = :canonical, updated_at = now() "
+            f"WHERE id = :id AND {HOLDS_LEASE}"
+        ),
+        {"canonical": canonical, "id": document_id, "pile_id": fence.pile_id, "epoch": fence.epoch},
+    )
+    conn.execute(
+        text(
+            "UPDATE facts_and_claims SET status = 'superseded' WHERE source_document_id = :id "
+            f"AND status = 'active' AND {HOLDS_LEASE}"
+        ),
+        {"id": document_id, "pile_id": fence.pile_id, "epoch": fence.epoch},
+    )
+
+
+def requeue(conn: Connection, fence: Fence, document_id: str) -> None:
+    conn.execute(
+        text(
+            "UPDATE documents SET status = 'ingested', updated_at = now() "
+            f"WHERE id = :id AND status = 'extracted' AND alias_of_document_id IS NULL AND {HOLDS_LEASE}"
+        ),
+        {"id": document_id, "pile_id": fence.pile_id, "epoch": fence.epoch},
+    )
+
+
+def prune_missing_paths(conn: Connection, fence: Fence, present: set[str]) -> int:
+    rows = conn.execute(
+        text(
+            "SELECT id, paths FROM documents WHERE pile_id = :pile_id AND status NOT IN ('removed', 'superseded')"
+        ),
+        {"pile_id": fence.pile_id},
+    ).all()
+    changed = 0
+    for row in rows:
+        old = row.paths or {}
+        remaining = {path: stat for path, stat in old.items() if path in present}
+        if remaining and len(remaining) != len(old):
+            conn.execute(
+                text(
+                    f"UPDATE documents SET paths = CAST(:paths AS jsonb), updated_at = now() WHERE id = :id AND {HOLDS_LEASE}"
+                ),
+                {
+                    "id": row.id,
+                    "paths": json.dumps(remaining),
+                    "pile_id": fence.pile_id,
+                    "epoch": fence.epoch,
+                },
+            )
+            changed += 1
+    return changed

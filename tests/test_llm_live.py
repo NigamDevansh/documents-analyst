@@ -55,11 +55,11 @@ def client_for(provider: str):  # noqa: ANN201 — the concrete class is the poi
     if not key:
         pytest.skip(f"no key configured for {provider}")
 
-    model = {
-        "gemini": "gemini-3.6-flash",
-        "anthropic": "claude-haiku-4-5-20251001",
-        "openai": "gpt-4o",
-    }[provider]
+    model = (
+        settings.resolved_model_extract
+        if settings.llm_provider == provider
+        else settings.llm_default_models[provider][0]
+    )
     return build_client(provider=provider, api_key=key, model=model)
 
 

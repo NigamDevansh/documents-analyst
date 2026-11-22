@@ -74,6 +74,11 @@ export function useEvents(pileId: string | null): {
  */
 const KNOWN_TYPES = [
   "run.started",
+  "run.blocked",
+  "run.retry_requested",
+  "run.incomplete",
+  "run.sources_changed",
+  "run.coverage_updated",
   "run.resumed",
   "run.paused",
   "run.finished",

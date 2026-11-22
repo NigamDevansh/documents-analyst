@@ -133,7 +133,7 @@ def _agreement_for(
         # Party selection is a separate structured LLM call; the document-level
         # renewal may be old after preamble/NER work, so renew before it.
         ctx.renew_lease(fence)
-        picked = pick_parties(preamble, candidates, ctx.llm)
+        picked = pick_parties(preamble, candidates, ctx.judge)
     else:
         picked = []
     names = party_names(candidates, picked)

@@ -24,9 +24,14 @@ export class ApiError extends Error {
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  // A file upload is multipart: the browser writes that content type (with its
+  // boundary) itself, so it must not be overwritten with JSON.
+  const multipart = init?.body instanceof FormData;
   const response = await fetch(path, {
     ...init,
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    headers: multipart
+      ? { ...(init?.headers ?? {}) }
+      : { "content-type": "application/json", ...(init?.headers ?? {}) },
   });
   if (!response.ok) {
     // The API's `detail` is written to be read by a person — surface it rather
@@ -44,6 +49,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  retry: (pile: string, actor: string) => call<{ retrying: boolean }>(`/piles/${pile}/retry`, { method: "POST", headers: { "X-Actor": actor } }),
   health: () => call<Health>("/health"),
   piles: () => call<{ piles: PileSummary[] }>("/piles").then((b) => b.piles),
   register: (pile: string) => call<Register>(`/piles/${pile}/deliverable`),
@@ -55,6 +61,12 @@ export const api = {
     call<{ findings: Finding[] }>(`/piles/${pile}/findings`).then((b) => b.findings),
   documentText: (id: string) => call<DocumentText>(`/documents/${id}/text`),
   cost: (pile: string) => call<Cost>(`/piles/${pile}/cost`),
+  /** Writes the file into the pile's folder; the worker reads it on its next pass. */
+  upload: (pile: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return call<Record<string, unknown>>(`/piles/${pile}/documents`, { method: "POST", body: form });
+  },
 
   decide: (id: string, approve: boolean, actor: string, body: { note?: string; chosen_value_group?: number }) =>
     call<{ decision: { status: string; decided_by: string } }>(

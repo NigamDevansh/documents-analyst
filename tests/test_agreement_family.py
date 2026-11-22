@@ -16,6 +16,7 @@ The rule these tests hold in place:
 from __future__ import annotations
 
 import os
+import uuid
 from collections.abc import Iterator
 
 import pytest
@@ -31,7 +32,7 @@ from documents_analyst_core.entities.family import detect_family
 
 pytestmark = pytest.mark.db
 
-SCRATCH = "analyst_family_test"
+SCRATCH = "analyst_family_test_" + uuid.uuid4().hex[:12]
 
 
 @pytest.fixture(scope="module")

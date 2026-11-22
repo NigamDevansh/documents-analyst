@@ -24,6 +24,7 @@ See docs/WORKER_RUNTIME.md § "What survives when a worker freezes mid-run".
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,6 +69,7 @@ class ReconcileResult:
     aliased: int = 0
     superseded: int = 0
     path_added: int = 0
+    path_removed: int = 0
     quarantined: int = 0
     removed: int = 0
     restored: int = 0
@@ -78,7 +80,16 @@ class ReconcileResult:
 
     @property
     def changed(self) -> bool:
-        return bool(self.added or self.aliased or self.superseded or self.removed or self.restored)
+        return bool(
+            self.added
+            or self.aliased
+            or self.superseded
+            or self.removed
+            or self.restored
+            or self.quarantined
+            or self.path_added
+            or self.path_removed
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,16 +163,31 @@ def _apply(
 
     # 1 ─ these exact bytes are already a document in this pile.
     seen = doc_repo.by_sha(conn, fence.pile_id, read.sha256)
+    twin = (
+        doc_repo.by_text_sha(conn, fence.pile_id, read.text_sha256 or "")
+        if read.text_sha256
+        else None
+    )
+    previous = _previous_version(
+        conn, fence.pile_id, entry.path.name, path, present, listing_complete=listing_complete
+    )
+    keep = {str(row["id"]) for row in (seen, twin) if row}
+    displaced = doc_repo.reconcile_path(conn, fence, path, keep, present, listing_complete)
+    result.superseded += displaced
     if seen:
+        # Refresh stat metadata even for an existing path (e.g. restoring old bytes).
+        doc_repo.add_path(conn, fence, str(seen["id"]), path, stat)
         if path not in (seen["paths"] or {}):
-            doc_repo.add_path(conn, fence, str(seen["id"]), path, stat)
             result.path_added += 1
-        if seen["status"] == "removed":
-            # Deleted and put back (a bad sync, an undo). Leaving it `removed`
-            # means the pile is quietly one contract short.
-            doc_repo.restore(conn, fence, str(seen["id"]))
+        if displaced and seen["status"] == "extracted":
+            doc_repo.requeue(conn, fence, str(seen["id"]))
+        if seen["status"] in ("removed", "superseded"):
+            if twin and str(twin["id"]) != str(seen["id"]):
+                doc_repo.restore_as_alias(conn, fence, str(seen["id"]), str(twin["id"]))
+            else:
+                doc_repo.restore(conn, fence, str(seen["id"]))
             result.restored += 1
-            result.notes.append(f"{entry.path.name}: back after being removed")
+            result.notes.append(f"{entry.path.name}: restored a previously seen version")
         return
 
     # 2 ─ could we read it? A parse failure is recorded as a document, so the
@@ -186,7 +212,6 @@ def _apply(
         return
 
     # 3 ─ same extracted text, different bytes: a format duplicate.
-    twin = doc_repo.by_text_sha(conn, fence.pile_id, read.text_sha256 or "")
     if twin:
         doc_repo.insert(
             conn,
@@ -205,9 +230,6 @@ def _apply(
         return
 
     # 4 ─ this filename existed with different bytes: a new version.
-    previous = _previous_version(
-        conn, fence.pile_id, entry.path.name, path, present, listing_complete=listing_complete
-    )
     document_id = doc_repo.insert(
         conn,
         fence,
@@ -223,8 +245,11 @@ def _apply(
     )
 
     if previous:
-        doc_repo.mark_superseded(conn, fence, previous)
-        result.superseded += 1
+        # reconcile_path already retired an overwritten path. A moved-and-edited
+        # source may instead have no overlapping path and still needs retirement.
+        if displaced == 0:
+            doc_repo.mark_superseded(conn, fence, previous)
+            result.superseded += 1
         result.notes.append(f"{entry.path.name}: replaces an earlier version")
     else:
         result.added += 1
@@ -323,7 +348,9 @@ def ingest_pile(
     _check_shutdown(stop_requested)
     if listing.complete:
         with engine.begin() as conn:
+            result.path_removed = doc_repo.prune_missing_paths(conn, fence, present)
             result.removed = doc_repo.mark_removed(conn, fence, present)
+            doc_repo.promote_orphaned_aliases(conn, fence)
     else:
         # A folder we couldn't open tells us nothing about whether its documents
         # still exist. Concluding "gone" from "couldn't look" would mark the whole
@@ -335,4 +362,15 @@ def ingest_pile(
             watch_path.name,
             ", ".join(listing.unreadable),
         )
+    if result.changed:
+        from documents_analyst.db.repo import events
+
+        with engine.begin() as conn:
+            events.append(
+                conn,
+                pile_id=fence.pile_id,
+                run_id=str(uuid.uuid4()),
+                type="run.sources_changed",
+                payload={},
+            )
     return result

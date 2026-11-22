@@ -31,16 +31,6 @@ from documents_analyst_core.taxonomy.schema import open_subject_schema
 from .extract import MAX_TOKENS, Rejection, _locate
 from .models import Citation
 
-MAX_PER_DOCUMENT = 12
-"""A hard ceiling, because the failure mode here is volume rather than error.
-
-Every one of these passed the verbatim gate, so none of them are invented — but
-a document that yields forty "material terms" has yielded a summary of itself,
-and a reviewer scrolling past forty rows to find the two that matter is a
-reviewer who stops reading. The cap is per document and the excess is reported,
-not silently dropped.
-"""
-
 
 @dataclass(frozen=True, slots=True)
 class OpenSubject:
@@ -63,11 +53,15 @@ class OpenSubjectResult:
     rejected: list[Rejection]
     sections_seen: int
     truncated: int = 0
-    """How many were dropped by `MAX_PER_DOCUMENT`. Reported rather than
-    swallowed: a document that hit the cap is a document worth looking at."""
+    """Legacy telemetry counter; extraction no longer truncates subjects by count."""
     attempts: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    failed_sections: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return self.failed_sections == 0
 
 
 def covered_fields() -> str:
@@ -77,7 +71,11 @@ def covered_fields() -> str:
     nothing about the taxonomy — the same direction of dependency `extract.py`
     already follows.
     """
-    return "\n".join(f"- {f.key}: {f.description}" for f in FIELDS)
+    return "\n".join(
+        f"- {f.key}: {f.description}"
+        + (f" Also called: {', '.join(f.aliases)}." if f.aliases else "")
+        for f in FIELDS
+    )
 
 
 def extract_open_subjects(
@@ -99,7 +97,7 @@ def extract_open_subjects(
     covered = covered_fields()
     subjects: list[OpenSubject] = []
     rejected: list[Rejection] = []
-    seen = attempts = sent = got = 0
+    seen = attempts = sent = got = failed = 0
 
     for section in list(sections)[:max_sections]:
         body = text[section.start : section.end]
@@ -121,6 +119,7 @@ def extract_open_subjects(
                 system=system, user=user, schema=schema, max_tokens=MAX_TOKENS
             )
         except LLMError as exc:
+            failed += 1
             rejected.append(Rejection("", "", f"section {section.number or '(preamble)'}: {exc}"))
             continue
 
@@ -139,10 +138,8 @@ def extract_open_subjects(
                     Rejection(str(raw.get("subject", "")), str(raw.get("source_quote", "")), why)
                 )
 
-    truncated = max(len(subjects) - MAX_PER_DOCUMENT, 0)
-    return OpenSubjectResult(
-        subjects[:MAX_PER_DOCUMENT], rejected, seen, truncated, attempts, sent, got
-    )
+    truncated = 0
+    return OpenSubjectResult(subjects, rejected, seen, truncated, attempts, sent, got, failed)
 
 
 def ground_subject(

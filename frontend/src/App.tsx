@@ -45,7 +45,7 @@ export function readHash(hash: string = location.hash): { pile: string | null; t
  * cannot say a *different* pile started (it is subscribed to the one on screen),
  * so the pile list, and only that, is also polled every few seconds.
  *
- * See README.md § "The dashboard".
+ * See docs/UI_AND_LINKING.html.
  */
 export default function App() {
   const [piles, setPiles] = useState<PileSummary[]>([]);
@@ -78,6 +78,12 @@ export default function App() {
   const [broken, setBroken] = useState<string | null>(null);
   const [toast, setToast] = useState<{ text: string; bad?: boolean } | null>(null);
 
+  const selectedPile = useRef(pileId);
+  selectedPile.current = pileId;
+  const pileRequest = useRef(0);
+  const sourceRequest = useRef(0);
+  const [loadedPile, setLoadedPile] = useState<string | null>(null);
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const { events, live } = useEvents(pileId);
   const split = useSplit();
 
@@ -157,6 +163,7 @@ export default function App() {
   // costing query that fails has nothing to say about the register — so each
   // one lands on its own and whatever failed is named and retryable.
   const loadPile = useCallback(async (id: string) => {
+    const request = ++pileRequest.current;
     const results = await Promise.allSettled([
       api.register(id),
       api.citations(id),
@@ -164,7 +171,9 @@ export default function App() {
       api.findings(id),
       api.cost(id),
     ]);
+    if (selectedPile.current !== id || pileRequest.current !== request) return;
     const [registerData, citationList, items, findingList, costData] = results;
+    setLoadedPile(id);
     if (registerData.status === "fulfilled") setRegister(registerData.value);
     if (citationList.status === "fulfilled") setCitations(citationList.value);
     if (items.status === "fulfilled") setQueue(items.value);
@@ -184,8 +193,10 @@ export default function App() {
 
   useEffect(() => {
     if (!pileId) return;
-    setCitation(null);
-    setDoc(null);
+    sourceRequest.current++;
+    setCitation(null); setDoc(null); setLoadingDoc(false);
+    setRegister(null); setCitations([]); setQueue([]); setFindings([]); setCost(null);
+    setBroken(null); setLoadedPile(null);
     loadPile(pileId).catch((error: Error) => setToast({ text: error.message, bad: true }));
   }, [pileId, loadPile]);
 
@@ -236,20 +247,23 @@ export default function App() {
   const [focus, setFocus] = useState(0);
   const showCitation = useCallback(
     async (next: Citation) => {
+      const request = ++sourceRequest.current;
+      const requestedPile = selectedPile.current;
       setCitation(next);
       setFocus((n) => n + 1);
       // Already open. Refetching text we are holding swaps the pane for a
       // skeleton and back, and a skeleton has no highlight to scroll to — which
       // is how a second citation in the *same* file ended up at the top of an
       // unscrolled document.
-      if (doc?.id === next.source_document_id) return;
+      if (doc?.id === next.source_document_id) { setLoadingDoc(false); return; }
       setLoadingDoc(true);
       try {
-        setDoc(await api.documentText(next.source_document_id));
+        const document = await api.documentText(next.source_document_id);
+        if (sourceRequest.current === request && selectedPile.current === requestedPile) setDoc(document);
       } catch (error) {
-        setToast({ text: (error as Error).message, bad: true });
+        if (sourceRequest.current === request) setToast({ text: (error as Error).message, bad: true });
       } finally {
-        setLoadingDoc(false);
+        if (sourceRequest.current === request) setLoadingDoc(false);
       }
     },
     [doc?.id],
@@ -283,6 +297,12 @@ export default function App() {
         const message =
           error instanceof ApiError ? error.message : (error as Error).message;
         setToast({ text: message, bad: true });
+        // A 409 means the queue moved under this card — decided by someone else, or
+        // sent back because its sources changed. Reload so the card does not linger.
+        if (error instanceof ApiError && error.status === 409 && pileId) {
+          loadPile(pileId).catch(() => undefined);
+          loadPiles().catch(() => undefined);
+        }
       } finally {
         setBusy(null);
       }
@@ -305,11 +325,12 @@ export default function App() {
   }
 
   return (
-    <div className="shell">
+    <div className="shell" data-navigation-open={navigationOpen}>
+      <button className="mobile-nav btn" aria-expanded={navigationOpen} aria-controls="pile-navigation" onClick={() => setNavigationOpen(v => !v)}>{navigationOpen ? "Close piles" : "Piles"}</button>
       <Rail
         piles={piles}
         selected={pileId}
-        onSelect={setPileId}
+        onSelect={(id) => { setPileId(id); setNavigationOpen(false); }}
         health={health}
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
@@ -320,7 +341,7 @@ export default function App() {
       <main className="main">
         <header className="topbar">
           <h1>{pile?.name ?? "…"}</h1>
-          {register && <span className="stat">document <b>v{register.version}</b></span>}
+          {loadedPile === pileId && register && <span className="stat">document <b>v{register.version}</b></span>}
           {pile && <span className="stat"><b>{pile.documents}</b> documents</span>}
           {pile && pile.open_conflicts > 0 && (
             <span className="stat"><b>{pile.open_conflicts}</b> disputed</span>
@@ -336,8 +357,33 @@ export default function App() {
               </span>
             </span>
           )}
+          {pile && (
+            <label className="btn" title="Add files to this pile. They are read, checked and reviewed like any other file in its folder.">
+              Upload files
+              <input
+                type="file"
+                multiple
+                hidden
+                accept=".pdf,.docx,.md,.markdown,.txt,.html,.htm"
+                onChange={async (event) => {
+                  const input = event.currentTarget;
+                  const files = Array.from(input.files ?? []);
+                  input.value = "";
+                  if (!files.length) return;
+                  try {
+                    for (const file of files) await api.upload(pile.id, file);
+                    setToast({ text: `Uploaded ${files.length} file${files.length === 1 ? "" : "s"} — reading starts in a few seconds` });
+                    await loadPiles();
+                  } catch (e) {
+                    setToast({ text: (e as Error).message, bad: true });
+                  }
+                }}
+              />
+            </label>
+          )}
+          {pile && (pile.status === "parked" || pile.status === "error" || (pile.status === "idle" && (pile.retryable ?? 0) > 0)) && <button className="btn" disabled={!actor} title={actor ? (pile.status === "idle" ? `Try again on ${pile.retryable} file(s) whose extraction kept failing` : "Start another analysis with the current configuration") : "Add your name in the sidebar first"} onClick={async () => { try { await api.retry(pile.id, actor!); await loadPiles(); } catch (e) { setToast({ text: (e as Error).message, bad: true }); } }}>Retry analysis</button>}
           <span className="topbar__spacer" />
-          {pile && register && (
+          {pile && loadedPile === pileId && register && (
             <DocumentDownload document={register.document} version={register.version} />
           )}
           {pile && <span className={`pill pill--${pile.status === "awaiting_review" ? "disputed" : "settled"}`}>{pile.status.replace("_", " ")}</span>}
@@ -417,7 +463,8 @@ export default function App() {
          * change tab measures nothing on the way back. The panel inside is what
          * animates. */}
         <div className="split" ref={split.container}>
-          {tab === "register" && register && (
+          {loadedPile !== pileId && <p role="status" className="stack">Loading this pile…</p>}
+          {tab === "register" && loadedPile === pileId && register && (
             <>
               <motion.div
                 key="register"
@@ -460,7 +507,7 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
             >
-              <ReviewQueue items={queue} onDecide={decide} busy={busy} />
+              <ReviewQueue items={loadedPile === pileId ? queue : []} onDecide={decide} busy={busy} />
             </motion.div>
           )}
 
@@ -473,7 +520,7 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
             >
-              <CostPanel cost={cost} findings={findings} />
+              <CostPanel cost={loadedPile === pileId ? cost : null} findings={loadedPile === pileId ? findings : []} priceWarnings={health?.pricing?.warnings ?? []} />
             </motion.div>
           )}
         </div>

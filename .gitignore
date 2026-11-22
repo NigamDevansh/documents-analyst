@@ -30,3 +30,7 @@ models/
 # probe scratch output (regenerable)
 .probe/
 .cache/
+
+# Browser regression output
+frontend/test-results/
+frontend/playwright-report/

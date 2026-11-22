@@ -1,0 +1,37 @@
+name: Verify application
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Dashboard checks
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+      - name: Build and run the offline application suite
+        run: |
+          docker compose --profile full run --rm --build -v "$PWD/frontend:/app/frontend:ro" tests sh -c 'ruff check . && ruff format --check . && mypy && python scripts/build_fixture_docs.py --check && python scripts/verify_fixtures.py && pytest -m "not live"'
+      - name: Container logs
+        if: failure()
+        run: docker compose --profile full logs --no-color
+      - name: Stop services
+        if: always()
+        run: docker compose --profile full --profile tests down -v --remove-orphans

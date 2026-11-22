@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import os
 import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -31,7 +32,7 @@ from documents_analyst.worker.scanner import Listing, scan_pile
 
 pytestmark = pytest.mark.db
 
-SCRATCH = "analyst_discovery_test"
+SCRATCH = "analyst_discovery_test_" + uuid.uuid4().hex[:12]
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
@@ -544,11 +545,21 @@ def test_a_pile_with_no_graph_ready_work_is_not_claimed(engine: Engine, tmp_path
     a worker on a pile with no work while another pile waits."""
     pile_dir = tmp_path / "idle"
     aged(pile_dir / "a.md")
-    ingest(engine, pile_dir, "idle")
+    pile_id, _ = ingest(engine, pile_dir, "idle")
 
     with engine.begin() as conn:
         conn.execute(text("UPDATE documents SET status = 'extracted'"))
         conn.execute(text("UPDATE piles SET lease_expires_at = NULL"))
+        from documents_analyst.db.repo import events
+
+        for existing in conn.execute(text("SELECT id FROM piles")).scalars():
+            events.append(
+                conn,
+                pile_id=str(existing),
+                run_id=str(uuid.uuid4()),
+                type="run.coverage_updated",
+                payload={},
+            )
         assert queue.claim_pile(conn, "worker-A") is None
 
 

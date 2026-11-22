@@ -47,6 +47,7 @@ from documents_analyst.models import (
     load_models,
     shared_across_threads,
 )
+from documents_analyst.pricing import price_warnings
 from documents_analyst.settings import Settings, get_settings
 from documents_analyst.worker import lease, notify, runner
 from documents_analyst.worker.ingest import ShutdownRequested, ingest_pile
@@ -70,6 +71,7 @@ class GraphEnv:
     checkpointer: object
     models: LoadedModels
     llm: LLMClient
+    judge: LLMClient | None = None
 
 
 @contextlib.contextmanager
@@ -98,6 +100,16 @@ def graph_environment(settings: Settings, *, enabled: bool = True) -> Iterator[G
             model=settings.resolved_model_extract,
             max_retries=settings.llm_max_retries,
         )
+        judge = (
+            llm
+            if settings.resolved_model_judge == settings.resolved_model_extract
+            else build_client(
+                provider=settings.llm_provider,
+                api_key=settings.llm_api_key,
+                model=settings.resolved_model_judge,
+                max_retries=settings.llm_max_retries,
+            )
+        )
         # One set of weights for every pile thread; the local models take turns.
         models = shared_across_threads(load_models(settings))
         for warning in models.warnings:
@@ -109,7 +121,7 @@ def graph_environment(settings: Settings, *, enabled: bool = True) -> Iterator[G
         return
 
     with checkpointer(settings.database_url) as saver:
-        yield GraphEnv(checkpointer=saver, models=models, llm=llm)
+        yield GraphEnv(checkpointer=saver, models=models, llm=llm, judge=judge)
 
 
 _VERIFIED: dict[str, tuple[int, int, str]] = {}
@@ -197,6 +209,14 @@ def discover(
                 stop_requested=stop_event.is_set if stop_event is not None else None,
                 skip_root_names=(settings.deliverable_filename,),
             )
+            # New text, or text gone: re-read now and withdraw only the review items
+            # whose evidence changed. An identical copy (`aliased`) adds no text and
+            # changes no answer, so it touches nothing.
+            if result.added or result.superseded or result.removed or result.restored:
+                from documents_analyst.db.repo import decisions as decision_repo
+
+                with engine.begin() as conn:
+                    decision_repo.invalidate_review(conn, Fence(pile_id=pile_id, epoch=epoch))
             if result.changed or result.quarantined or result.listing_incomplete:
                 LOG.info(
                     "%s: +%d new, %d aliased, %d superseded, %d restored, "
@@ -329,6 +349,7 @@ def _drain_lane(
                 graph_env.models,
                 graph_env.llm,
                 worker_id=me,
+                judge=graph_env.judge,
             )
         except LostLease as exc:
             LOG.info("run lost its lease: %s", exc)
@@ -411,6 +432,7 @@ def _resume_one(
             graph_env.llm,
             pile_id=pile_id,
             worker_id=me,
+            judge=graph_env.judge,
         )
     except LostLease as exc:
         LOG.info("resume lost its lease: %s", exc)
@@ -451,6 +473,68 @@ def run_once(
     return touched
 
 
+def watch_loop(
+    engine: Engine,
+    settings: Settings,
+    *,
+    graph_env: GraphEnv | None,
+    stopped: threading.Event,
+    wake: threading.Event,
+) -> None:
+    """Keep discovery/repair responsive while one graph drain owns its pile lanes."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def graphs() -> None:
+        assert graph_env is not None
+        drain_resumes(engine, settings, graph_env, stop_event=stopped)
+        drain_runs(engine, settings, graph_env, stop_event=stopped)
+
+    # A wake (an approval's NOTIFY, a new file) that lands while a drain is running can't
+    # start one — only one drain runs at a time. Without remembering it, the approval
+    # waited out the rest of `scan_interval_s` after the drain ended. So a missed wake is
+    # recorded, and that drain's completion wakes the loop. Only a missed one: waking
+    # after every drain would spin, since an empty drain finishes at once.
+    missed = threading.Event()
+
+    def drain_finished(_: object) -> None:
+        if missed.is_set():
+            wake.set()
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="graph-drain") as pool:
+        pending = None
+        tick = 0
+        woken = False
+        try:
+            while not stopped.is_set():
+                wake.clear()
+                deep = tick == 0 or bool(
+                    settings.scan_deep_every and tick % settings.scan_deep_every == 0
+                )
+                try:
+                    discover(engine, settings, deep=deep, stop_event=stopped)
+                    if pending is not None and pending.done():
+                        try:
+                            pending.result()
+                        except Exception:
+                            LOG.exception("graph drain failed; retrying on the next pass")
+                        pending = None
+                    if graph_env is not None and pending is None and not stopped.is_set():
+                        missed.clear()
+                        pending = pool.submit(graphs)
+                        pending.add_done_callback(drain_finished)
+                    elif woken and pending is not None:
+                        missed.set()
+                        if pending.done():  # finished between the check and the flag
+                            wake.set()
+                except Exception:
+                    LOG.exception("discovery failed; retrying next tick")
+                tick += 1
+                woken = wake.wait(settings.scan_interval_s)
+        finally:
+            stopped.set()
+            # The executor joins graph threads before the engine and models close.
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="one pass, then exit")
@@ -469,6 +553,10 @@ def main(argv: list[str] | None = None) -> int:
         LOG.info("model cache ready at %s", status["root"])
     else:
         LOG.warning("model cache at %s is incomplete: %s", status["root"], status["missing"])
+    # Prices never stop a call; this only says where the cost report will be unpriced
+    # or using a price past its `valid_until`.
+    for warning in price_warnings(settings):
+        LOG.warning("pricing: %s", warning["message"])
 
     engine = create_engine(settings.database_url, pool_pre_ping=True, future=True)
     LOG.info(
@@ -503,24 +591,7 @@ def main(argv: list[str] | None = None) -> int:
 
         notify.start_listener(psycopg_dsn(settings.database_url), wake, stopped)
 
-        tick = 0
-        while not stopped.is_set():
-            # Boot is always deep — startup is when we are most likely to have
-            # missed something — then every Nth tick, to bound how long an
-            # mtime-preserving copy can hide.
-            deep = tick == 0 or bool(
-                settings.scan_deep_every and tick % settings.scan_deep_every == 0
-            )
-            # Cleared BEFORE the pass, not between the pass and the wait: an
-            # approval landing WHILE a pass runs is too late for it, so the flag
-            # must survive into the wait and start the next pass immediately.
-            wake.clear()
-            try:
-                run_once(engine, settings, deep=deep, stop_event=stopped, graph_env=graph_env)
-            except Exception:
-                LOG.exception("pass failed; retrying next tick")
-            tick += 1
-            wake.wait(settings.scan_interval_s)
+        watch_loop(engine, settings, graph_env=graph_env, stopped=stopped, wake=wake)
 
     engine.dispose()
     return 0

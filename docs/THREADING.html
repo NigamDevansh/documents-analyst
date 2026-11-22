@@ -100,15 +100,20 @@
   <p>Every subfolder of the watched folder is one <strong>pile</strong>, with its own
   run, review queue, history and <code>final-document.docx</code>. Piles are never
   compared with each other, which is what lets them run side by side. The worker
-  process has three kinds of thread:</p>
+  process has four kinds of thread:</p>
   <div class="scroll">
     <table>
       <thead><tr><th>Thread</th><th>What it may do</th><th>What it may never do</th></tr></thead>
       <tbody>
         <tr>
           <td class="w">main</td>
-          <td>Discover piles and ingest them — scan, hash, parse — one pile after another; then hand the graph work to the lanes and wait for them</td>
-          <td>Block forever. Every wait has a timeout</td>
+          <td>Discover piles and ingest them — scan, hash, parse — one pile after another, and check each final document; then submit a graph drain if none is running, and wait for the next tick</td>
+          <td>Block forever, or wait for graph work. Every wait has a timeout</td>
+        </tr>
+        <tr>
+          <td class="w">graph-drain</td>
+          <td>One executor thread, one drain at a time: resume reviewed piles, then run ready ones, fanning out to the lanes</td>
+          <td>Hold up discovery. A slow LLM call never delays another pile’s scan or repair</td>
         </tr>
         <tr>
           <td class="w">pile lanes <code>pile_0…</code></td>
@@ -124,18 +129,21 @@
     </table>
   </div>
   <p>The main thread and the listener share two booleans — <code>wake</code> (“look
-  sooner”) and <code>stopped</code> (“shut down”) — and nothing else. The lanes also
-  read <code>stopped</code> before claiming another pile, and they share the graph
-  environment that was opened once per process; the section after the example says
-  what is in it and how each part is made safe. <code>pile_concurrency: 1</code>
-  restores strictly one pile after another, with the graph running on the main
-  thread.</p>
+  sooner”) and <code>stopped</code> (“shut down”) — and nothing else. A wake that
+  lands while a drain is still running is remembered (<code>missed</code>), and the
+  drain’s done-callback sets <code>wake</code> when it finishes, so an approval does
+  not wait out the rest of the 30 seconds. The lanes also read <code>stopped</code>
+  before claiming another pile, and they share the graph environment that was opened
+  once per process; the section after the example says what is in it and how each
+  part is made safe. <code>pile_concurrency: 1</code> restores strictly one pile
+  after another, still on the drain thread.</p>
 </section>
 
 <section>
   <h2>Two folders at once: one lane per pile</h2>
   <p><code>folder1</code> holds 5 files and <code>folder2</code> holds 10. Discovery
-  reads both on the main thread; then the drain fans out to the lanes. Each lane
+  reads both on the main thread; then the graph-drain thread fans out to the lanes
+while the main thread goes back to its timer. Each lane
   claims a pile with <code>FOR UPDATE SKIP LOCKED</code> plus a fenced lease in one
   statement (<code>queue.claim_and_lease</code>), so a row one lane has locked is
   simply skipped by the next — <code>folder2</code> does not wait for
@@ -144,7 +152,7 @@
   <figure>
     <div class="plate">
       <svg viewBox="0 0 780 340" role="img"
-           aria-label="Five rows. The main thread first discovers folder1 then folder2, one file at a time. Then three pile lanes run. Lane pile_0 claims folder1 and extracts its five files one after another, then runs match, conflicts and audit once over the whole pile, pauses at the human gate releasing its lease, and claims the next pile, finding none. Lane pile_1 claims folder2 and does the same with ten files at the same time. Lane pile_2 finds nothing to claim and returns. Finally the main thread joins the lanes and waits for the wake flag or the thirty-second timer.">
+           aria-label="Five rows. The main thread first discovers folder1 then folder2, one file at a time. Then three pile lanes run. Lane pile_0 claims folder1 and extracts its five files one after another, then runs match, conflicts and audit once over the whole pile, pauses at the human gate releasing its lease, and claims the next pile, finding none. Lane pile_1 claims folder2 and does the same with ten files at the same time. Lane pile_2 finds nothing to claim and returns. Meanwhile the main thread does not wait for the lanes: it waits for the wake flag or the thirty-second timer and discovers again; a wake missed during the drain fires when the drain ends.">
         <defs>
           <marker id="l" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <polygon points="0,1 10,5 0,9" fill="currentColor"/>
@@ -156,7 +164,7 @@
         <rect x="170" y="36" width="530" height="34" rx="3" fill="var(--ground)" stroke="currentColor" stroke-width="1.3"/>
         <text x="182" y="57" font-family="system-ui, sans-serif" font-size="11.5" fill="currentColor">discover: folder1, then folder2 — scan · hash · parse, one file at a time</text>
 
-        <text x="170" y="96" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".7">drain — up to pile_concurrency = 3 lanes, each claims → runs → claims the next</text>
+        <text x="170" y="96" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".7">graph-drain thread — up to pile_concurrency = 3 lanes, each claims → runs → claims the next</text>
 
         <!-- lane 1: folder1, 5 files -->
         <text x="152" y="124" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="11" fill="currentColor">pile_0</text>
@@ -202,10 +210,10 @@
         <rect x="170" y="230" width="250" height="34" rx="3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-dasharray="4 4" opacity=".7"/>
         <text x="182" y="251" font-family="system-ui, sans-serif" font-size="10.5" fill="currentColor" opacity=".75">claim → nothing left (rows locked) → return</text>
 
-        <!-- main: join and wait -->
+        <!-- main: does not wait for the drain -->
         <text x="152" y="310" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="11" fill="currentColor">main</text>
         <rect x="170" y="290" width="530" height="34" rx="3" fill="var(--ground)" stroke="var(--signal)" stroke-width="1.3" stroke-dasharray="5 3"/>
-        <text x="182" y="311" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--signal)">lanes joined · wake.wait(30 s)</text>
+        <text x="182" y="311" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="var(--signal)">meanwhile: wake.wait(30 s) → discover again · never joins the drain</text>
       </svg>
     </div>
     <figcaption>Schematic, not to scale. Inside each lane the numbered boxes are one
@@ -244,8 +252,8 @@
   <p>Zoom in on one pile. You copy three contracts into <code>acme/</code> in the
   watched folder (<code>watched/</code> by default, or your <code>WATCH_DIR</code>)
   at the instant the worker boots. Here is the real sequence. The graph work runs
-  on a pile lane; the timeline folds that lane into the main column, because the
-  main thread only waits for it.</p>
+  on a pile lane under the graph-drain thread; the timeline folds both into the main
+  column, because with one pile nothing else is happening on the main thread.</p>
 
   <figure>
     <div class="plate">
@@ -391,7 +399,7 @@
           <td>Already locks per cursor, so it is thread-safe as it stands</td>
         </tr>
         <tr>
-          <td class="w">LLM client</td>
+          <td class="w">LLM clients (extraction, judge)</td>
           <td>One pile’s request leaking into another’s</td>
           <td>Stateless per call; nothing survives from one request to the next</td>
         </tr>
@@ -539,6 +547,16 @@
           <td class="w">the settle check</td>
           <td>Half-copied PDFs get hashed and stored as documents that never existed</td>
           <td>corrupt data</td>
+        </tr>
+        <tr>
+          <td class="w">the <code>missed</code> wake</td>
+          <td>An approval that lands during a drain waits out the rest of the 30-second tick</td>
+          <td>latency only</td>
+        </tr>
+        <tr>
+          <td class="w">the separate drain thread</td>
+          <td>Discovery and final-document repair stall behind a slow LLM call in any pile</td>
+          <td>latency only</td>
         </tr>
         <tr>
           <td class="w">the per-model lock</td>

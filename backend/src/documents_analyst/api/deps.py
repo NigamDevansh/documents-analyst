@@ -74,7 +74,7 @@ async def require_token(
     supplied = ""
     if authorization and authorization.lower().startswith("bearer "):
         supplied = authorization[7:].strip()
-    if not supplied or not secrets.compare_digest(supplied, expected):
+    if not supplied or not secrets.compare_digest(supplied.encode(), expected.encode()):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API_TOKEN is set on this instance; send Authorization: Bearer <token>",

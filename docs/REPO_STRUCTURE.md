@@ -72,7 +72,8 @@ documents-analyst/
 ├── config/
 │   ├── runtime.yaml             tracked non-secret runtime defaults
 │   │                            (incl. deliverable_filename: final-document.docx)
-│   └── model_prices.json        per-model token prices for the cost report
+│   ├── model_prices.json        per-model token prices for the cost report (never a limit)
+│   └── MODEL_PRICING.md         how to keep those prices current
 │
 ├── packages/core/                          THE SHARED LIBRARY
 │   ├── pyproject.toml           documents-analyst-core
@@ -89,7 +90,7 @@ documents-analyst/
 │       ├── provenance/          models · normalize · extract · open_subjects · injection
 │       ├── taxonomy/            fields.py (single source of truth) · schema.py
 │       ├── entities/            parties.py · family.py
-│       ├── embeddings/          OpenAI text-embedding-3-small
+│       ├── embeddings/          OpenAI or Gemini API clients, 384 dimensions
 │       ├── nli/                 deberta · stub
 │       ├── prompts/             wrapping · extraction · open_subjects · parties ·
 │       │                        adjudication · audit
@@ -102,6 +103,7 @@ documents-analyst/
 │   └── src/documents_analyst/
 │       ├── settings.py          the ONLY place env is read
 │       ├── deliverable.py       final-document.docx: sections, hashes, write, read back, verify
+│       ├── pricing.py           cached price table; price_warnings() for /health, worker, Cost tab
 │       ├── api/                 main · deps · schemas · events · routes/
 │       ├── worker/              main · scanner · ingest · lease · queue · runner · notify
 │       ├── graph/               build · state · checkpointer · context · nodes/
@@ -111,10 +113,12 @@ documents-analyst/
 │       └── mcp/                 api.py (HTTP client) · server.py (7 tools) · tools.py
 │
 ├── frontend/                               THE DASHBOARD — React + Vite
+│   ├── e2e/             Playwright browser regressions (synthetic HTTP fixtures)
 │   └── src/
 │       ├── api/         client.ts · types.ts · spans.ts (offset → highlight) · refresh.ts
 │       ├── components/  Rail · Register · SourcePane · ReviewQueue · Reviewer ·
-│       │                Activity · CostPanel · DocumentDownload · SetupGuide
+│       │                Activity · CostPanel · DocumentDownload · SetupGate ·
+│       │                SetupGuide · KeyRequirements
 │       ├── hooks/       useEvents (SSE) · useSplit (draggable divider)
 │       └── styles/      tokens.css (palette, type, easings) · app.css
 │
@@ -126,12 +130,14 @@ documents-analyst/
 │   ├── prefetch_models.py       bakes models into the image
 │   ├── verify_fixtures.py       every answer-key quote is verbatim
 │   ├── build_fixture_docs.py    .md → .docx with real heading styles
+│   ├── build_architecture_html.py  a styled architecture page → standalone HTML
 │   ├── demo_api.sh              the API, end to end, with curl
 │   └── demo_crash.sh            damages final-document.docx, shows Resolve restore it
 ├── watched/                     the default WATCH_DIR — one folder per pile, each
 │                                gets its own final-document.docx; set WATCH_DIR
 │                                in .env to watch a folder elsewhere instead
 ├── tests/                       the whole suite, incl. the invariant tests
+├── .github/workflows/ci.yml     offline suite, image build, dashboard checks
 └── docs/                        these markdown files + THREADING.html · UI_AND_LINKING.html
 ```
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -45,7 +46,7 @@ from documents_analyst_core.portable.ner_gliner import Span
 
 pytestmark = pytest.mark.db
 
-SCRATCH = "analyst_commit_test"
+SCRATCH = "analyst_commit_test_" + uuid.uuid4().hex[:12]
 FILENAME = "final-document.docx"
 
 PREAMBLE = "This Agreement is entered into between Acme Corporation and Beta Logistics Inc.\n\n"
@@ -329,7 +330,9 @@ def test_the_first_run_writes_the_final_document_into_the_pile_folder(
     rec = record(engine, pile_id)
     assert rec["deliverable_version"] == 1
     recorded = deliverable.recorded_sections(rec["deliverable_sections"])
-    assert {s.body for s in recorded} == {"USD 10,000", "30 days"}
+    assert {s.body.splitlines()[0] for s in recorded if s.slot_id} == {"USD 10,000", "30 days"}
+    assert all("Sources (verbatim evidence):" in s.body for s in recorded if s.slot_id)
+    assert any(s.heading == "Source inventory and limitations" for s in recorded)
     assert rec["deliverable_sha256"] == deliverable.document_sha256(recorded)
 
     on_disk = deliverable.read(path)
@@ -338,7 +341,7 @@ def test_the_first_run_writes_the_final_document_into_the_pile_folder(
     ], "the file says exactly what was recorded"
 
     rows = versions(engine, pile_id)
-    assert [(r.operation, r.reason) for r in rows] == [("create", "initial")] * 2
+    assert [(r.operation, r.reason) for r in rows] == [("create", "initial")] * 3
 
     types = [e["type"] for e in events(engine, pile_id, outcome.run_id)]
     assert "stage.commit.applied" in types
@@ -402,23 +405,32 @@ def test_a_changed_source_updates_only_the_section_it_affects(
 
     assert rec["deliverable_version"] == 2
     assert after[price].sha256 == before[price].sha256, "the untouched section is identical"
-    assert after[terms].body == "45 days"
+    assert after[terms].body.splitlines()[0] == "45 days"
     assert after[terms].sha256 != before[terms].sha256
 
-    changed = [r for r in versions(engine, pile_id) if r.version == 2]
+    changed = [
+        r
+        for r in versions(engine, pile_id)
+        if r.version == 2 and r.section_label != "Source inventory and limitations"
+    ]
     assert len(changed) == 1, "one changed section, one row"
     assert changed[0].operation == "edit"
     assert changed[0].reason == "source_update", "no decision was needed — one live value"
-    assert (changed[0].before_text, changed[0].after_text) == ("30 days", "45 days")
+    assert (changed[0].before_text.splitlines()[0], changed[0].after_text.splitlines()[0]) == (
+        "30 days",
+        "45 days",
+    )
     assert changed[0].before_sha256 == before[terms].sha256
 
     applied = [
         e for e in events(engine, pile_id, outcome.run_id) if e["type"] == "stage.commit.applied"
     ]
     assert len(applied) == 1
-    assert applied[0]["payload"]["edited"] == 1
+    assert applied[0]["payload"]["edited"] == 2
     assert applied[0]["payload"]["unchanged"] == 1
-    assert "45 days" in [x.body for x in deliverable.read(contract.parent / FILENAME)]
+    assert "45 days" in [
+        x.body.splitlines()[0] for x in deliverable.read(contract.parent / FILENAME)
+    ]
 
 
 def test_a_document_that_already_agrees_is_left_alone(engine: Engine, tmp_path: Path) -> None:
@@ -501,9 +513,15 @@ def test_deleting_a_contract_flags_its_terms_and_asks_whether_to_remove_them(
         items = decision_repo.open_items(conn, pile_id)
     assert all(s.orphaned for s in live)
     bodies = [s.body for s in deliverable.read(contract.parent / FILENAME)]
-    assert f"USD 10,000 — {render.ORPHANED}" in bodies, "the warning travels with the value"
+    assert any(body.startswith(f"USD 10,000 — {render.ORPHANED}") for body in bodies), (
+        "the warning travels with the value"
+    )
 
-    flagged = [r for r in versions(engine, pile_id) if r.version == 2]
+    flagged = [
+        r
+        for r in versions(engine, pile_id)
+        if r.version == 2 and r.section_label != "Source inventory and limitations"
+    ]
     assert {r.reason for r in flagged} == {"orphan_flag"}
     assert all(r.decision_id is None for r in flagged), "ungated: no decision behind it"
 
@@ -747,7 +765,7 @@ def test_a_crash_after_writing_the_file_loses_nothing_and_duplicates_nothing(
 
     rec = record(engine, pile_id)
     assert rec["deliverable_version"] == 1
-    assert len(versions(engine, pile_id)) == 2, "each section recorded once"
+    assert len(versions(engine, pile_id)) == 3, "each term and the coverage section recorded once"
     recorded = deliverable.recorded_sections(rec["deliverable_sections"])
     assert deliverable.verify(contract.parent / FILENAME, recorded).ok
 

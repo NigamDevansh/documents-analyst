@@ -2,7 +2,7 @@
 
 How the suite is built, what runs where, and why the offline guarantee is the
 design constraint rather than a nice-to-have. This covers the backend, the
-shared core and the dashboard — about 638 tests in `tests/` (the ones marked
+shared core and the dashboard — the backend tests in `tests/` (the ones marked
 `db` need `DATABASE_URL`).
 
 Companion to [`CODE_ARCHITECTURE.md`](CODE_ARCHITECTURE.md),
@@ -57,10 +57,17 @@ tests/
 make ui-test          # vitest, no browser, no server
 ```
 
-Deliberately small, and only over the parts where being wrong is invisible:
-`cut` (offsets → highlighted pieces) and `readHash`. Everything else in the UI
-is verified by looking at it — which is what a browser is for, and what
-component-level assertions about `<div>` structure are not.
+The unit suite covers `cut` (offsets → highlighted pieces), including Unicode
+code points, `readHash`, and which SSE events force a refetch (`refresh.ts`). Browser regressions exercise delayed pile and
+citation responses, mobile layout, and keyboard review/setup
+behavior against controlled HTTP fixtures. A separate live-stack browser check
+is still needed to verify real ingestion, provider calls, review, and downloads.
+
+```bash
+cd frontend
+npx playwright install chromium
+npm run test:e2e
+```
 
 `cut` earns its tests because the failure it prevents is silent: highlighting by
 searching for the quote text would light up the *first* "Net 30" in a contract
@@ -97,7 +104,17 @@ load for the whole suite rather than one per test.
 
 ## 3. Database
 
-One database, migrations applied once, tables truncated between tests.
+Each DB-backed module derives a server connection from `DATABASE_URL`, creates
+its own scratch database (for example `analyst_api_test`), applies migrations,
+and truncates that scratch database's tables between tests. The database name
+in `DATABASE_URL` is not the database those fixtures truncate; application data
+is left intact. The configured user needs permission to create databases.
+
+Every scratch database name includes a random suffix. Concurrent test processes
+on one Postgres server therefore create and drop different databases. The
+application database remains untouched. The compose `tests` service has its own
+opt-in profile, so `make full-up` starts application services without tests.
+`make test` explicitly selects the test service.
 
 ```python
 @pytest.fixture(scope="session")
@@ -205,6 +222,8 @@ The behaviours the system promises, each a named test. All offline.
 | Same parties ⇒ one agreement | `test_two_documents_with_the_same_parties_share_one_agreement` |
 | An extracted pile leaves the queue | `test_an_extracted_pile_leaves_the_queue` |
 | A failed extraction stays in the queue | `test_a_document_whose_calls_all_failed_stays_in_the_queue` |
+| A partial extraction publishes nothing and retries cleanly | `test_partial_extraction_retries_without_publishing_or_duplicating` |
+| A section that always fails is quarantined after `job_max_attempts` | `test_a_section_that_always_fails_is_quarantined_after_the_attempt_limit` |
 | A failed run is not recorded as ok | `test_a_run_whose_every_call_failed_is_not_recorded_as_ok` |
 | An unverifiable amendment becomes a conflict | `test_an_amendment_claimed_without_verifiable_evidence_becomes_a_conflict` |
 | An unreachable adjudicator defaults to conflict | `test_an_unreachable_adjudicator_defaults_to_conflict` |
@@ -280,6 +299,22 @@ The behaviours the system promises, each a named test. All offline.
 | A settled slot does not re-open itself | `test_a_resolved_slot_does_not_reopen_itself_on_the_next_run` |
 | New evidence re-opens it AND can be answered | `test_new_disagreeing_evidence_reopens_a_resolved_slot_and_asks_again` |
 | Three values are never settled by comparing two | `test_a_three_way_disagreement_never_takes_the_amendment_fast_lane` |
+| A verified chain settles on the latest value | `test_a_verified_chain_is_one_amendment_settling_on_the_latest_value` |
+| One unproved step makes the slot a conflict | `test_one_unproved_step_makes_the_whole_slot_a_conflict` |
+| An older value reappearing later is a conflict | `test_an_older_value_reappearing_later_is_a_conflict_without_asking_the_judge` |
+| At most three documents stating the later value are tried | `test_at_most_three_documents_are_tried_and_the_newest_verdict_stands` |
+| Evidence is checked in the paragraph shown, then the document | `test_evidence_is_checked_inside_the_paragraph_shown_before_the_whole_document` |
+| Judging uses its own injected model | `test_judging_uses_the_separately_injected_model` |
+| A source change withdraws only items whose evidence changed | `test_a_source_change_withdraws_only_the_items_whose_evidence_changed` |
+| An approval on changed evidence is sent back and re-asked | `test_a_pending_item_with_changed_evidence_is_sent_back_and_asked_again` |
+| Runs never stop for cost, and report what they spent | `test_runs_never_stop_for_cost_and_report_what_they_spent` |
+| An unpriced model still runs and is reported as unpriced | `test_an_unpriced_model_still_runs_and_is_reported_as_unpriced` |
+| Missing, expiring and expired prices are each named | `test_missing_expiring_and_expired_prices_are_each_named` |
+| Discovery and repair continue while graph work is blocked | `test_discovery_and_repair_continue_while_graph_work_is_blocked` |
+| A wake during a drain starts the next drain when it ends | `test_a_wake_during_a_drain_starts_the_next_drain_as_soon_as_it_ends` |
+| OS files and rulebook lookalikes are not documents | `test_operating_system_files_and_rulebook_lookalikes_are_not_documents` |
+| An open subject naming a field folds in only with the right kind of value | `test_a_name_match_with_the_wrong_kind_of_value_stays_an_open_subject` |
+| An unsupported upload is refused before writing | `test_unsupported_upload_is_refused_before_writing` |
 | A judge outage is not reported as compliant | `test_a_judge_outage_is_not_reported_as_compliant` |
 | Answering a finding moves the finding | `test_answering_a_finding_moves_the_finding` |
 | A conflict with no options cannot be approved | `test_a_conflict_with_no_options_cannot_be_approved_at_all` |
@@ -318,6 +353,21 @@ say so.
 
 ## 7. Live provider tests
 
+Offline provider tests cover automatic LLM selection from keys (Anthropic,
+Gemini, OpenAI), independent OpenAI/Gemini embedding selection, explicit
+provider overrides, and the two setup requirements returned by `/health`.
+Gemini embedding tests check batching, vector normalisation, response shape,
+dimensions and estimated usage. These use stub SDK responses and do not prove
+that a particular key or hosted model is currently usable.
+
+The setup screen polls `/health` every four seconds and unlocks when both
+requirements are met. Browser checks should cover no keys, one OpenAI key,
+one Gemini key, Claude alone, Claude plus an embedding key, and a pinned
+provider whose key is absent. The frontend unit suite tests utility functions
+only; the Playwright spec (`frontend/e2e/workspace.spec.ts`) covers the gate
+unlocking once missing credentials become ready, against synthetic `/health`
+responses, not real keys.
+
 `tests/test_llm_live.py` is marked `live` and skipped unless asked for
 (`RUN_LIVE_LLM=1 uv run pytest -m live`). It checks what is only knowable by
 calling the providers: that the configured models exist, accept our schemas
@@ -327,19 +377,25 @@ These exist because **a provider's written spec can be wrong**, and finding out
 during a demo is the expensive alternative. Nothing else in the suite needs a
 key: the final document is written and verified locally.
 
+The credential-isolation fixture is scoped per test. It clears credentials for
+all offline tests and preserves them only for explicitly opted-in `live` tests.
+Live checks use the configured extraction model for the selected provider and
+the configured catalogue default for other providers.
+
 ---
 
 ## 8. CI
 
-GitHub Actions, on push and PR:
+`.github/workflows/ci.yml` runs on pushes and pull requests:
 
 ```
 1. verify_fixtures.py                 answer key is honest
 2. ruff check + ruff format --check   lint and format
-3. mypy packages/core                 the shared surface only
+3. mypy                              core and backend
 4. docker build (layer cached)        the real image
 5. pgvector service + migrations
 6. pytest                             everything except live
+7. dashboard unit/build/browser checks   Chromium, synthetic HTTP fixtures
 ```
 
 **CI builds the actual image** rather than installing dependencies directly.
@@ -347,8 +403,13 @@ Slower on a cold cache, but it verifies the claim that matters — a stranger
 clones this and `make full-up` works. A CI that tests a setup no human uses
 proves nothing about that.
 
-No secrets are configured, which is the point: if CI is green, the suite is
-genuinely offline.
+The workflow needs no API secrets; its offline tests use scripted
+providers and the local models baked into the image.
+
+The workflow's commands are exercised locally; a GitHub-hosted run still needs
+the changes pushed to a repository with Actions enabled. No API secrets are
+required. Browser regressions cover delayed responses, mobile navigation,
+Unicode highlights, keyboard review, modal focus, and setup unlocking.
 
 ### `make test` runs in its own service, with no `.env`
 

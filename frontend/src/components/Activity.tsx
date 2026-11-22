@@ -8,7 +8,7 @@ import type { StageEvent } from "../api/types";
  * pile's own `status` (the worker holds the lease or not), not by whether this
  * browser's connection is open.
  *
- * See README.md § "The dashboard".
+ * See docs/UI_AND_LINKING.html.
  */
 export function Activity({
   events,
@@ -89,13 +89,30 @@ const ENDED = new Set(["run.finished", "run.paused", "run.lost_lease"]);
  * hidden — a new stage should look unfamiliar, not invisible.
  */
 function phrase(event: StageEvent): string {
-  const said = SAID[event.type];
-  if (said) return said;
   const payload = event.payload ?? {};
+  // A run's closing event carries what it spent. There is no spending limit, so this
+  // is the answer to "what did that cost", not a warning.
+  const cost = RUN_END.has(event.type) ? spent(payload) : "";
+  const said = SAID[event.type];
+  if (said) return `${said}${cost}`;
+  if (event.type === "run.incomplete") return `Analysis incomplete: ${payload.remaining} document(s) remain. The previous final document is retained.${cost}`;
+  if (event.type === "run.retry_requested") return "Retry requested";
+  if (event.type === "run.blocked") return String(payload.reason || "Analysis paused: check configuration and retry");
   if (event.type === "stage.extract.document") {
     return `Reading ${payload.filename ?? "a document"}`;
   }
   return event.type;
+}
+
+const RUN_END = new Set(["run.finished", "run.paused", "run.incomplete"]);
+
+function spent(payload: Record<string, unknown>): string {
+  if (payload.cost_usd === undefined) return "";
+  const dollars = `$${Number(payload.cost_usd).toFixed(4)}`;
+  const unpriced = Number(payload.unpriced_calls ?? 0);
+  return unpriced
+    ? ` — this run cost ${dollars} plus ${unpriced} unpriced call${unpriced === 1 ? "" : "s"}`
+    : ` — this run cost ${dollars}`;
 }
 
 const SAID: Record<string, string> = {
@@ -104,6 +121,8 @@ const SAID: Record<string, string> = {
   "run.paused": "Waiting for your review",
   "run.finished": "Finished",
   "run.lost_lease": "Handed over to another worker",
+  "run.sources_changed": "Files in the folder changed",
+  "run.coverage_updated": "Updated the list of sources in the final document",
   "stage.ingest.done": "Read the folder",
   "stage.extract.done": "Read the documents",
   "stage.match.done": "Matched terms across documents",

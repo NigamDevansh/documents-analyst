@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from documents_analyst.api.deps import Db, run
+from documents_analyst.api.deps import Actor, Db, run
 from documents_analyst.db.repo import commits as commit_repo
 from documents_analyst.db.repo import decisions as decision_repo
 from documents_analyst.db.repo import documents as doc_repo
@@ -57,3 +57,13 @@ async def taxonomy_gaps(pile_id: str, conn: Db) -> dict[str, Any]:
     recurs across agreements is evidence the taxonomy is missing a field, and the
     count is the order in which to add them."""
     return {"gaps": await run(conn, fact_repo.open_subject_counts, pile_id)}
+
+
+@router.post("/{pile_id}/retry")
+async def retry_analysis(pile_id: str, actor: Actor, conn: Db) -> dict[str, Any]:
+    if not await run(conn, pile_repo.retry, pile_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Nothing to retry: only a failed analysis, or one with files whose extraction kept failing, can be retried — and not while it is running or waiting for review",
+        )
+    return {"retrying": True, "requested_by": actor}

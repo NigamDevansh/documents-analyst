@@ -53,6 +53,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from documents_analyst.graph.nodes import (
@@ -117,13 +118,29 @@ def build_graph(checkpointer: Any) -> Any:
     graph.add_edge(START, RESOLVE)
     graph.add_edge(RESOLVE, INGEST)
     graph.add_edge(INGEST, EXTRACT)
-    graph.add_edge(EXTRACT, MATCH)
+
+    def after_extract(state: PileRunState, config: RunnableConfig) -> str:
+        from documents_analyst.graph.context import context_of
+        from documents_analyst.worker.queue import ingested_documents
+
+        ctx = context_of(config)
+        with ctx.engine.begin() as conn:
+            pending = ingested_documents(
+                conn, state["pile_id"], max_attempts=ctx.settings.job_max_attempts
+            )
+        return END if pending else MATCH
+
+    graph.add_conditional_edges(EXTRACT, after_extract, {END: END, MATCH: MATCH})
     graph.add_edge(MATCH, CLASSIFY)
     graph.add_edge(CLASSIFY, AUDIT)
 
     graph.add_conditional_edges(AUDIT, _after_audit, {HUMAN_GATE: HUMAN_GATE, END: END})
     graph.add_edge(HUMAN_GATE, COMMIT)
-    graph.add_edge(COMMIT, RECONCILE)
+    graph.add_conditional_edges(
+        COMMIT,
+        lambda state: HUMAN_GATE if state.get("review_pending") else RECONCILE,
+        {HUMAN_GATE: HUMAN_GATE, RECONCILE: RECONCILE},
+    )
     graph.add_edge(RECONCILE, AUDIT)
 
     return graph.compile(checkpointer=checkpointer)

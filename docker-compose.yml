@@ -170,7 +170,7 @@ services:
   # habit of whoever ran it. This service is what CI runs, so `make test`
   # reproduces CI rather than approximating it.
   tests:
-    profiles: ["full"]
+    profiles: ["tests"]
     build: .
     depends_on:
       migrate:

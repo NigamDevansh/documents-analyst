@@ -7,6 +7,7 @@ transaction around each would put a round trip in the hottest loop.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -66,10 +67,34 @@ class StageRunSink:
         }
 
 
-def totals_for_pile(conn: Connection, pile_id: str) -> dict[str, object]:
+def _unpriced(
+    conn: Connection, pile_id: str, run_id: str | None, priced: Collection[str]
+) -> list[dict[str, object]]:
+    """Models that used tokens but have no entry in the price table, with their call
+    counts. Decided from the table, not from a stored zero: a cheap embedding call costs
+    less than the `numeric(12,6)` column's smallest step and is stored as 0.000000, and
+    reading that as "no price" called a priced model unpriced. Local models (NLI, NER)
+    record no tokens, so they are free rather than unpriced."""
+    rows = conn.execute(
+        text(
+            "SELECT model, count(*) AS calls FROM stage_runs WHERE pile_id = :pile_id "
+            "AND (CAST(:run_id AS uuid) IS NULL OR run_id = CAST(:run_id AS uuid)) "
+            "AND tokens_in + tokens_out > 0 GROUP BY model ORDER BY model"
+        ),
+        {"pile_id": pile_id, "run_id": run_id},
+    ).all()
+    return [
+        {"model": row.model, "calls": int(row.calls)} for row in rows if row.model not in priced
+    ]
+
+
+def totals_for_pile(
+    conn: Connection, pile_id: str, priced: Collection[str] = ()
+) -> dict[str, object]:
     """What this pile has cost AND where the time went, by node. `ok = false` rows count — a
     retry still spent its earlier attempts, and dropping them under-reports when a run was
-    struggling. `latency_ms` is wall time including retries."""
+    struggling. `latency_ms` is wall time including retries. `priced` is the set of models
+    with a price entry; calls to any other model are listed under `unpriced`."""
     rows = conn.execute(
         text(
             "SELECT node, sum(tokens_in) AS tokens_in, sum(tokens_out) AS tokens_out, "
@@ -82,9 +107,35 @@ def totals_for_pile(conn: Connection, pile_id: str) -> dict[str, object]:
     ).all()
     by_node = [dict(row._mapping) for row in rows]
     return {
+        "unpriced": _unpriced(conn, pile_id, None, priced),
         "by_node": by_node,
         "cost_usd": sum((r["cost_usd"] or Decimal(0)) for r in by_node),
         "calls": sum(int(r["calls"] or 0) for r in by_node),
         "failures": sum(int(r["failures"] or 0) for r in by_node),
         "latency_ms": sum(int(r["latency_ms"] or 0) for r in by_node),
     }
+
+
+def totals_for_run(
+    conn: Connection, pile_id: str, run_id: str, priced: Collection[str] = ()
+) -> dict[str, object]:
+    """What one run spent, for its closing timeline event. `unpriced_calls` counts calls
+    to models with no entry in `config/model_prices.json`: their tokens are real but
+    their dollars are unknown, so a total that silently treated them as free would be
+    wrong. Stored as strings and ints — this lands in a JSON event payload."""
+    row = conn.execute(
+        text(
+            "SELECT coalesce(sum(llm_cost_usd), 0) AS cost_usd, count(*) AS calls "
+            "FROM stage_runs WHERE pile_id = :pile_id AND run_id = :run_id"
+        ),
+        {"pile_id": pile_id, "run_id": run_id},
+    ).one()
+    totals: dict[str, object] = {
+        "cost_usd": f"{Decimal(row.cost_usd):.4f}",
+        "calls": int(row.calls),
+    }
+    unpriced = _unpriced(conn, pile_id, run_id, priced)
+    if unpriced:
+        totals["unpriced_calls"] = sum(int(str(u["calls"])) for u in unpriced)
+        totals["unpriced_models"] = [u["model"] for u in unpriced]
+    return totals

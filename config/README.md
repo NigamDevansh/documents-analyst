@@ -3,7 +3,7 @@
 ## `runtime.yaml`
 
 This is the **single tracked home for non-secret runtime configuration**:
-paths, scanner and lease timings, the generated document's file name, budgets,
+paths, scanner and lease timings, the generated document's file name, run sizes,
 logging, MCP, and default model values. Edit it when changing how the application behaves.
 
 Two keys are worth knowing by name:
@@ -40,18 +40,11 @@ the same string that lands in `stage_runs.model`.
 }
 ```
 
-**Ships empty on purpose.** Per-token rates change without notice and cannot be
-verified from inside this process, so no provider model id or rate is supplied
-in this repository. An unpriced model costs `Decimal(0)`
-and `CollectingSink.unpriced_models` names it — a cost summary reads
-*"1.2M tokens, unpriced"* rather than a plausible wrong dollar figure. Tokens
-are measured exactly; dollars are the one number that needs
-your input.
+The table includes verified standard text rates for the default providers and
+embedders. Rates are strings parsed as `Decimal`; negative and non-finite values
+are rejected. Custom models need their own verified rates.
 
-Values are **strings**, and are read with `Decimal`. A cost report is
-arithmetic someone may check against an invoice, and `0.1 + 0.2` is not `0.3`
-in binary floating point.
-
-Nothing breaks while this is empty. Running unpriced is a supported state —
-refusing to start because a price was missing would stop a pile over a
-reporting detail.
+Prices only convert tokens to dollars for the cost report: there is no spending
+limit, and a missing or expired price never stops a call. A model with no entry
+is reported as unpriced; an expired one is still used and flagged. See
+[MODEL_PRICING.md](MODEL_PRICING.md) for rate sources and expiry warnings.

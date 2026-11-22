@@ -121,8 +121,25 @@ def write(path: Path, *, title: str, sections: list[Section]) -> None:
     temp name, because the scanner ignores dotfiles — a reader racing the write never
     sees a half-written source."""
     from docx import Document  # deferred: python-docx is only needed where a file is written
+    from docx.shared import Inches, Pt, RGBColor
 
     document = Document()
+    for page_section in document.sections:
+        page_section.top_margin = page_section.bottom_margin = Inches(0.8)
+        page_section.left_margin = page_section.right_margin = Inches(0.9)
+    normal = document.styles["Normal"]
+    normal.font.name = "Calibri"
+    normal.font.size = Pt(11)
+    normal.paragraph_format.space_after = Pt(7)
+    normal.paragraph_format.line_spacing = 1.12
+    normal.paragraph_format.widow_control = True
+    for name, size in ((TITLE_STYLE, 22), (AGREEMENT_STYLE, 15), (SECTION_STYLE, 12)):
+        style = document.styles[name]
+        style.font.color.rgb = RGBColor(0, 0, 0)
+        style.font.size = Pt(size)
+        style.paragraph_format.keep_with_next = True
+        for border in style.element.xpath(".//w:pBdr"):
+            border.getparent().remove(border)
     props = document.core_properties
     props.title = title
     props.author = "documents-analyst"
@@ -142,6 +159,9 @@ def write(path: Path, *, title: str, sections: list[Section]) -> None:
     tmp = path.with_name(f".{path.name}.tmp")
     try:
         document.save(str(tmp))
+        verification = verify(tmp, sections)
+        if not verification.ok:
+            raise ValueError(f"Staged final document failed verification: {verification.summary()}")
         with open(tmp, "rb") as handle:
             os.fsync(handle.fileno())
         os.replace(tmp, path)

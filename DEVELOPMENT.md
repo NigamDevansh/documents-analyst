@@ -8,6 +8,14 @@ local virtual environment. Use the full Docker mode for reviewer parity and CI.
 
 Prerequisites: Docker Desktop, Python 3.12, and `uv`.
 
+Configure one OpenAI or Gemini key for both extraction and embeddings, or a
+Claude key plus an OpenAI or Gemini embedding key. Blank `LLM_PROVIDER` picks
+Claude, then Gemini, then OpenAI from the keys present; blank
+`EMBEDDING_PROVIDER` prefers OpenAI, otherwise Gemini when its key is present. Explicit settings pin
+the provider. With keys missing, the dashboard shows the setup screen and
+polls `/health` every four seconds. Save `.env` and restart host processes, or
+rerun `make up` for containers, to load changed credentials.
+
 ```bash
 cp .env.example .env
 # Edit config/runtime.yaml for paths, timeouts, scanner and runtime defaults.
@@ -28,7 +36,8 @@ becomes a pile with its documents read, hashed and stored. The watched folder is
 `watched/` in this repo unless `WATCH_DIR` in `.env` points somewhere else (an
 absolute path, no `~`); the Makefile reads the same variable and passes it to the
 host-run targets as `WATCH_ROOT`, so `make api`, `make worker-local` and the
-containers all see one folder. With an LLM key set, the same worker runs the
+containers all see one folder. With both an LLM key and an embedding key set,
+the same worker runs the
 graph over it — extraction, grounding, matching, conflict and amendment
 classification, rulebook audit — stops at the human gate, and commits approved
 decisions to the register.
@@ -100,27 +109,27 @@ This is the reproducible path for a reviewer or CI:
 
 ```bash
 cp .env.example .env
-make full-up
+make up
 ```
 
 Or, without Make:
 
 ```bash
-docker compose --profile full up --build
+docker compose --profile full up --build db migrate api worker
 ```
 
 The `full` profile starts `db`, one-shot `migrate`, `api`, and the worker. Both
 mount `${WATCH_DIR:-./watched}` at `/data/watched`. The
 worker scans `WATCH_ROOT` on its timer, ingests settled files, and runs the
 graph through matching, conflict classification, rulebook audit, the human
-gate and the final-document commit when an LLM key is configured.
+gate and the final-document commit when both key requirements are met.
 Inside that Docker network the application uses `db:5432`, so Compose overrides
 the local `DATABASE_URL` from `.env` automatically.
 
 This is also the canonical local-model path: the build prefetches GLiNER and
 NLI into `/opt/models`, and the runtime loads them from that baked cache with
 `HF_HUB_OFFLINE=1` — so a missing weight fails loudly instead of quietly
-reaching for the network. OpenAI embeddings are API-only and are therefore not
+reaching for the network. OpenAI and Gemini embeddings are API-only and are therefore not
 included in the model cache. Verified with `docker run --network none`.
 
 Run the full test suite in the same image with:
@@ -128,6 +137,11 @@ Run the full test suite in the same image with:
 ```bash
 make test
 ```
+
+Test fixtures create uniquely named scratch databases on the configured
+Postgres server; they leave application data intact. The `tests` compose service
+has its own profile and runs only when explicitly selected by `make test`.
+See [`docs/TESTING.md`](docs/TESTING.md#3-database).
 
 ## Useful commands
 

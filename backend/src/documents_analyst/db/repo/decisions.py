@@ -217,11 +217,214 @@ def settle_many(
         return []
     rows = conn.execute(
         text(
-            "UPDATE pending_decisions SET status = 'approved', decided_by = :actor, "
-            "decided_at = now(), decided_note = :note "
-            "WHERE pile_id = :pile_id AND status = 'pending' AND kind = ANY(:kinds) "
-            "RETURNING id"
+            "SELECT id FROM pending_decisions WHERE pile_id = :pile_id AND status = 'pending' AND kind = ANY(:kinds)"
         ),
-        {"pile_id": pile_id, "kinds": kinds, "actor": actor, "note": note},
+        {"pile_id": pile_id, "kinds": kinds},
     ).all()
-    return [str(row.id) for row in rows]
+    approved = []
+    for row in rows:
+        item = get(conn, str(row.id))
+        if item is None or not evidence_current(conn, item):
+            continue
+        if settle(conn, str(row.id), status="approved", actor=actor, note=note):
+            approved.append(str(row.id))
+    return approved
+
+
+def invalidate_review(conn: Connection, fence: Fence, *, reread: bool = True) -> int:
+    """Withdraw the uncommitted review items a source change actually made stale.
+
+    Scoped by evidence, not by pile: an item is withdrawn (`superseded`, its author kept)
+    only when the live facts on its field no longer match the sources it showed. Before,
+    any added, copied or removed file withdrew every open and approved item in the pile —
+    dropping an identical copy into the folder threw away approvals for agreements it
+    had nothing to do with.
+
+    `reread` sends a pile paused at the gate back to `idle` so the change is read now and
+    its questions join the same review, rather than after it. Decisions still standing
+    are kept; Commit re-checks each one against current evidence before applying it.
+    Returns how many items were withdrawn."""
+    items = conn.execute(
+        text(
+            "SELECT id, kind, ref_id, payload, chosen_value_group FROM pending_decisions pd "
+            "WHERE pile_id = :pile_id AND kind IN ('conflict', 'amendment') "
+            "AND status IN ('pending', 'approved') "
+            "AND NOT EXISTS (SELECT 1 FROM deliverable_commits c WHERE pd.id = ANY(c.decision_ids))"
+        ),
+        {"pile_id": fence.pile_id},
+    ).all()
+    stale = [
+        str(row.id)
+        for row in items
+        if not evidence_current(conn, dict(row._mapping), row.chosen_value_group)
+    ]
+    if stale:
+        conn.execute(
+            text(
+                "UPDATE pending_decisions SET status = 'superseded' "
+                f"WHERE id = ANY(CAST(:ids AS uuid[])) AND {HOLDS_LEASE}"
+            ),
+            {"ids": stale, "pile_id": fence.pile_id, "epoch": fence.epoch},
+        )
+    if stale or reread:
+        conn.execute(
+            text(
+                "UPDATE piles SET status = 'idle' WHERE id = :pile_id "
+                f"AND status = 'awaiting_review' AND {HOLDS_LEASE}"
+            ),
+            {"pile_id": fence.pile_id, "epoch": fence.epoch},
+        )
+    return len(stale)
+
+
+def send_back_for_recheck(conn: Connection, item: dict[str, Any]) -> None:
+    """A pending item whose evidence changed under it: withdraw it and re-check the field.
+
+    Refusing the approval alone left the item approvable by no one — every attempt got
+    a 409, discovery saw no file change, and classify will not raise a second item while
+    one is pending. Withdrawing it (`superseded`, never deleted: who raised what stays
+    on record) and recording a sources change makes the pile run again, and classify
+    asks the question afresh with the options the sources hold now.
+
+    A pile paused at the gate goes back to `idle` so it can be claimed; its other
+    pending items stay pending and the gate waits for them again. Nothing here runs
+    while a worker holds the lease."""
+    withdrawn = conn.execute(
+        text(
+            "UPDATE pending_decisions SET status = 'superseded', "
+            "decided_note = 'withdrawn: its source evidence changed before approval' "
+            "WHERE id = :id AND status = 'pending' RETURNING pile_id"
+        ),
+        {"id": str(item["id"])},
+    ).first()
+    if withdrawn is None:
+        return
+    pile_id = str(withdrawn.pile_id)
+    conn.execute(
+        text(
+            "UPDATE piles SET status = 'idle', updated_at = now() WHERE id = :id "
+            "AND status = 'awaiting_review' "
+            "AND (lease_expires_at IS NULL OR lease_expires_at < now())"
+        ),
+        {"id": pile_id},
+    )
+    import uuid
+
+    from documents_analyst.db.repo import events
+
+    events.append(
+        conn,
+        pile_id=pile_id,
+        run_id=str(uuid.uuid4()),
+        type="run.sources_changed",
+        payload={"reason": "review evidence changed", "decision_id": str(item["id"])},
+    )
+    conn.execute(text("SELECT pg_notify('analyst_work', :pile_id)"), {"pile_id": pile_id})
+
+
+def evidence_current(conn: Connection, item: dict[str, Any], chosen: int | None = None) -> bool:
+    """Compare source identities, not just reusable group numbers, at both gates."""
+    if item.get("kind") not in ("conflict", "amendment") or not item.get("ref_id"):
+        return True
+    payload = item.get("payload") or {}
+    options = payload.get("options") or []
+    rows = conn.execute(
+        text(
+            "SELECT f.id, f.value_group, f.source_document_id, f.source_quote "
+            "FROM facts_and_claims f JOIN documents d ON d.id = f.source_document_id "
+            "WHERE f.slot_id = :id AND f.status = 'active' AND f.role <> 'superseded' "
+            "AND d.status NOT IN ('removed', 'superseded', 'quarantined')"
+        ),
+        {"id": str(item["ref_id"])},
+    ).all()
+    expected = {
+        (int(option["value_group"]), str(source["document_id"]), str(source.get("quote") or ""))
+        for option in options
+        for source in option.get("sources", [])
+        if source.get("document_id")
+    }
+    actual = {
+        (int(row.value_group or 0), str(row.source_document_id), str(row.source_quote))
+        for row in rows
+    }
+    chosen_group = chosen if chosen is not None else item.get("chosen_value_group")
+    if chosen_group is None:
+        chosen_group = payload.get("recommended_value_group")
+    # A prior successful resolution may already have superseded the other options.
+    applied = conn.execute(
+        text(
+            "SELECT f.source_document_id, f.source_quote FROM claim_slots s "
+            "JOIN facts_and_claims f ON f.id = s.current_fact_id "
+            "WHERE s.id = :id AND s.state = 'resolved' AND s.resolved_by = :actor "
+            "AND f.status = 'active' AND f.value_group = :chosen"
+        ),
+        {"id": str(item["ref_id"]), "actor": item.get("decided_by"), "chosen": chosen_group},
+    ).first()
+    if applied and (
+        not expected
+        or (int(chosen_group or 0), str(applied.source_document_id), str(applied.source_quote))
+        in expected
+    ):
+        return True
+    if expected and expected != actual:
+        return False
+    winner = chosen if chosen is not None else item.get("chosen_value_group")
+    if winner is None:
+        winner = payload.get("recommended_value_group")
+    return winner is not None and any(int(row.value_group or 0) == int(winner) for row in rows)
+
+
+def refresh_stale(conn: Connection, fence: Fence, item: dict[str, Any]) -> None:
+    """Keep the old decision as history and ask a fresh question with live options."""
+    conn.execute(
+        text(
+            f"UPDATE pending_decisions SET status = 'superseded' WHERE id = :id AND {HOLDS_LEASE}"
+        ),
+        {"id": str(item["id"]), "pile_id": fence.pile_id, "epoch": fence.epoch},
+    )
+    rows = conn.execute(
+        text(
+            "SELECT f.value_group, f.value, f.value_norm, f.source_document_id, f.source_quote, "
+            "f.char_start, f.char_end, d.filename FROM facts_and_claims f "
+            "JOIN documents d ON d.id = f.source_document_id "
+            "WHERE f.slot_id = :id AND f.status = 'active' AND f.role <> 'superseded' "
+            "AND d.status NOT IN ('removed', 'superseded', 'quarantined') ORDER BY f.value_group"
+        ),
+        {"id": str(item["ref_id"])},
+    ).all()
+    options: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        group = int(row.value_group or 0)
+        option = options.setdefault(
+            group,
+            {
+                "value_group": group,
+                "value_text": row.value.get("text"),
+                "value_norm": row.value_norm,
+                "sources": [],
+            },
+        )
+        option["sources"].append(
+            {
+                "document_id": str(row.source_document_id),
+                "filename": row.filename,
+                "quote": row.source_quote,
+                "char_start": row.char_start,
+                "char_end": row.char_end,
+            }
+        )
+    if not options:
+        return
+    raise_decision(
+        conn,
+        fence,
+        kind="conflict",
+        ref_id=str(item["ref_id"]),
+        payload={
+            "options": list(options.values()),
+            "field_key": (item.get("payload") or {}).get("field_key"),
+        },
+        detected_by="rule",
+        recommendation="Source evidence changed after this choice was reviewed. Review the current options.",
+        reopen=True,
+    )

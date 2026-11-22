@@ -21,8 +21,8 @@ from typing import Any
 import pytest
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _no_outbound_credentials() -> Iterator[None]:
+@pytest.fixture(autouse=True)
+def _no_outbound_credentials(request: pytest.FixtureRequest) -> Iterator[None]:
     """Blank every credential for the duration of the suite.
 
     Set to `""` rather than deleted, and that detail is the whole fixture.
@@ -37,6 +37,9 @@ def _no_outbound_credentials() -> Iterator[None]:
     `live`-marked tests are the exception; they are skipped by default and read
     their key from the environment they were launched with.
     """
+    if request.node.get_closest_marker("live") and os.environ.get("RUN_LIVE_LLM") == "1":
+        yield
+        return
     saved = {
         name: os.environ.get(name)
         for name in (

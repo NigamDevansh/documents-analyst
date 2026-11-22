@@ -15,6 +15,8 @@ Companion to [`CODE_ARCHITECTURE.md`](CODE_ARCHITECTURE.md) (foundations),
 ```
 backend/src/documents_analyst/
 ├── settings.py          the ONLY place os.environ is read
+├── pricing.py           config/model_prices.json → prices(); price_warnings()
+├── deliverable.py       writes and reads back final-document.docx
 ├── api/                 async — FastAPI
 │   ├── main.py          app factory
 │   ├── deps.py          connection + settings injection
@@ -22,7 +24,7 @@ backend/src/documents_analyst/
 │   ├── events.py        SSE fan-out (one LISTEN, many subscribers)
 │   └── routes/          piles · documents · decisions · deliverable · citations · events · cost
 ├── worker/              sync — see WORKER_RUNTIME.md
-│   ├── main.py  scanner.py  lease.py  queue.py  runner.py
+│   ├── main.py  scanner.py  ingest.py  lease.py  queue.py  runner.py  notify.py
 ├── graph/
 │   ├── build.py         StateGraph wiring + Postgres checkpointer
 │   ├── state.py         PileRunState
@@ -148,9 +150,9 @@ seconds, that is nothing.
 |---|---|---|
 | `Resolve` | `piles.deliverable_sections`, the file on disk | nothing, unless the file is missing, unreadable or differs — then rewrites it from the record (version unchanged) |
 | `Ingest` | `documents.extracted_text` | `document_chunks`, `agreements`, `documents.agreement_id` |
-| `Extract` | `documents`, taxonomy | `facts_and_claims` — only quotes that pass Gate 1 |
+| `Extract` | `documents`, taxonomy | `facts_and_claims` — only quotes that pass Gate 1, and only once every section and the open-subject pass answered. An incomplete document writes no facts and counts an attempt (`documents.attempts`); after `job_max_attempts` it is quarantined (`extraction failed after N attempts: …`) and the pile carries on |
 | `Match` | `facts_and_claims` | `claim_slots`, `facts.slot_id`, `facts.value_group` |
-| `Classify` | `claim_slots` + their grouped facts | `claim_slots.state`, `facts.role`, `pending_decisions` |
+| `Classify` | `claim_slots` + their grouped facts, the source paragraphs | `claim_slots.state`, `facts.role`, `pending_decisions` (§2.5b) |
 | `Audit` | `facts_and_claims`, `rulebook.yaml` | `findings`, `pending_decisions` |
 | `HumanGate` | — | **interrupt**; checkpoint is the pause |
 | `Commit` | approved `pending_decisions`, `claim_slots`, `piles.deliverable_sections` | applies each approved choice to its slot, **then** renders, writes `final-document.docx` if any section changed, and records `piles.deliverable_*`, `deliverable_versions`, `deliverable_commits` — one transaction |
@@ -219,6 +221,39 @@ approving twelve amendments at once agrees to a rule, not to twelve unseen
 numbers. A conflict approved with no choice is refused by the API (`422`, with
 the options listed), because there is no defensible default and picking a side
 for the reviewer is the one thing this system exists not to do.
+
+### 2.5b Classify: conflict or amendment
+
+One value group settles the slot. Two or more go down a ladder, cheapest test
+first, and the first tier that can answer does:
+
+```
+tier 0  every quote in one paragraph of one document?  → conflict, relationship same_passage
+3+ groups                                               → _chain (below)
+tier 1  both scalar (already known to differ)           → _amendment_across, detected_by rule
+tier 2  local NLI: no contradiction                     → agree
+tier 3  the judge                                       → _amendment_across, detected_by llm
+```
+
+**`_amendment_across`** asks whether the later value replaces the earlier one.
+A value can be stated by several documents, so it shows the judge each document
+stating the later value, newest first, up to `AMENDMENT_CANDIDATES = 3`, against
+the earliest statement of the earlier value; the first verified amendment wins.
+Each side is shown with the paragraph its quote sits in (bounded by blank lines,
+capped at `CONTEXT_CHARS = 1000`), because the words that make it an amendment
+usually sit just before the value. An `amendment` verdict holds only if its
+`evidence_quote` is verbatim and found exactly once — first inside the paragraph
+the judge was shown, then in the whole later document. Anything else, including
+an `LLMError`, is a conflict: the safe failure asks a person.
+
+**`_chain`** handles three or more values. Groups are put in arrival order and
+every neighbouring pair must be a verified amendment; then the last value wins
+and the item can take the fast lane. One failed step — or an older value
+reappearing in a later document — makes it a conflict. A 3+ amendment verdict
+not produced by `_chain` is downgraded to a conflict with no recommended group.
+
+Adjudication uses `ctx.judge` (`LLM_MODEL_JUDGE`), a client separate from the
+extraction client `ctx.llm` unless both resolve to the same model.
 
 ### 2.6 The gate: review everything, then commit once
 
@@ -461,12 +496,13 @@ on any that builds SQL, so this stays a property rather than a habit. The one
 | `GET /piles/{id}/deliverable/history` | The `deliverable_versions` rows: what changed, when, on whose decision |
 | `GET /documents/{id}/text` | `extracted_text` for the source pane |
 | `GET /piles/{id}/decisions` | The review queue |
-| `POST /decisions/{id}/approve` · `/reject` | One item |
+| `POST /decisions/{id}/approve` · `/reject` | One item. An approval whose evidence no longer matches the live facts (`evidence_current`) is withdrawn and re-asked (`send_back_for_recheck`: `superseded`, `run.sources_changed`, `NOTIFY`) and answered `409` — returned as a `JSONResponse`, not raised, so the withdrawal is not rolled back |
 | `POST /piles/{id}/decisions/approve-batch` | The amendment fast lane |
 | `GET /piles/{id}/citations` | The claim → source map: field, value, citation, `document_id`, `char_start/end`. Powers click-a-claim-to-highlight; no longer a separate toggle |
 | `GET /piles/{id}/findings` | Standing rulebook verdicts |
 | `GET /piles/{id}/events` | SSE — live pipeline |
-| `GET /piles/{id}/cost` | LLM spend, tokens and latency by stage |
+| `POST /piles/{id}/retry` | Re-queue an `error` (or legacy `parked`) pile, or an idle one with files quarantined by failed extraction; attempts reset. `409` otherwise. Pile summaries carry a `retryable` count |
+| `GET /piles/{id}/cost` | LLM spend, tokens and latency by stage, plus an `unpriced` list (models with no price; their calls count 0, never "free") |
 | `GET /piles/{id}/taxonomy-gaps` | Recurring `subject_free` concepts |
 
 #### Upload writes a file and deliberately no document row
@@ -509,7 +545,9 @@ before it shows you anything gets closed. When it is set, every route needs
 naming what is misconfigured, and a health check behind a credential cannot be
 used by whatever restarts the container. `/health` also carries a `watch`
 block — `path`, `deliverable_filename`, `pile_concurrency`, `scan_interval_s` —
-which is what the dashboard's setup guide reads. `path` is `watch_dir_host` when
+which is what the dashboard's setup guide reads, and `pricing.warnings` from
+`pricing.price_warnings()`: models with no price, or a price past or within 14
+days of its `valid_until`. Prices never block a call. `path` is `watch_dir_host` when
 Compose set it from `WATCH_DIR`, so the guide shows the folder as the person sees
 it rather than `/data/watched` inside the container; otherwise `watch_root`.
 (Phase 7 will fetch the stream rather
@@ -759,6 +797,26 @@ handing that to a host-side agent advertises a download it cannot follow.
 One frozen `Settings` in `settings.py`, loaded once via `pydantic-settings`.
 **Nothing else in the codebase reads `os.environ`.**
 
+With `LLM_PROVIDER` blank, `_pick_providers` chooses Anthropic when its key is
+present, otherwise Gemini when its key is present, otherwise OpenAI.
+`EMBEDDING_PROVIDER` is independent:
+blank chooses OpenAI when its key is present, otherwise Gemini when its key is
+present. With neither key, OpenAI is the default and the requirement stays unmet.
+Explicit provider settings require the corresponding key. Claude needs an OpenAI or
+Gemini embedding key in addition to its own key.
+
+`key_checklist()` returns the two capability requirements used by
+`GET /health`: acceptable keys and presence flags, `met`, `using`, `chosen_by`,
+and model names. `setup.ready` is true only when both are met. The frontend's
+`SetupGate` blocks the workspace and polls health every four seconds until it
+is ready; the API continues serving reads and the worker continues ingesting.
+Changes to `.env` require `make up` to reload the container environment.
+
+`models.load_models` injects `embedding_api_key`, `embedding_provider` and
+`resolved_embedding_model` into the core loader. OpenAI and Gemini both return
+384-dimensional vectors; Gemini normalises vectors and estimates token usage.
+The worker does not start graph work while either key requirement is missing.
+
 Core takes injected values, never a `Settings` object — that is what keeps
 `portable/` copyable and core testable with no `.env` present.
 
@@ -776,3 +834,30 @@ llm = build_client(
 ## See also
 
 [`TESTING.md`](TESTING.md) · [`BUILD_AND_RUNTIME.md`](BUILD_AND_RUNTIME.md)
+
+
+## Reliability changes after the user journey audit
+
+Extraction now reports section failures explicitly. Taxonomy and open-subject
+results are persisted together only when both passes complete; an unfinished
+document counts an attempt and is quarantined after `job_max_attempts` (§2.5).
+Classification and publication wait for all extraction batches. Three or more
+value groups settle only as a verified amendment chain (§2.5b).
+
+Approvals are checked against live source identities (`evidence_current`) at the
+API and inside the fenced commit transaction. A source change runs
+`invalidate_review`, which withdraws (`superseded`, author kept) only the
+uncommitted conflict/amendment items whose evidence changed; an identical copy
+(`aliased`) triggers nothing, and an added, superseded, restored or removed file
+sends an `awaiting_review` pile back to `idle` so the change joins the same
+review. Stale approvals are never recorded as applied.
+
+There is no spending limit. Each run's closing event (`run.finished`,
+`run.paused`, `run.incomplete`) carries `cost_usd`, `calls` and, when a model has
+no price, `unpriced_calls` / `unpriced_models` (`telemetry.totals_for_run`).
+
+DOCX sections include verbatim source passages, relative paths and offsets. A
+hashed coverage section lists sources and unavailable content. The staged file
+is verified before its atomic rename; section hashes then support verification,
+history and repair. Source inventory changes are graph work even when no new
+original needs extraction. See `run.sources_changed` / `run.coverage_updated`.

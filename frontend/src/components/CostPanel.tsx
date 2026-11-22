@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import type { Cost, Finding } from "../api/types";
+import type { Cost, Finding, PriceWarning } from "../api/types";
 
 /** Milliseconds as something a person reads: `840ms`, `9.2s`, `3m 04s`.
 
@@ -17,25 +17,37 @@ function duration(ms: number): string {
  * with no price entry shows as unpriced, never free. Writing the final document is
  * local file work and costs nothing, so only model calls appear here.
  *
- * See README.md § "The dashboard".
+ * See docs/UI_AND_LINKING.html.
  */
-export function CostPanel({ cost, findings }: { cost: Cost | null; findings: Finding[] }) {
+export function CostPanel({
+  cost,
+  findings,
+  priceWarnings = [],
+}: {
+  cost: Cost | null;
+  findings: Finding[];
+  /** From `/health`: configured models with a missing, expired or expiring price. */
+  priceWarnings?: PriceWarning[];
+}) {
   if (!cost) return <div className="stack"><div className="skeleton" style={{ height: 160 }} /></div>;
 
   const spend = Number(cost.cost_usd ?? 0);
+  const unpricedCalls = (cost.unpriced ?? []).reduce((sum, row) => sum + row.calls, 0);
   const unpriced = spend === 0 && cost.calls > 0;
 
   return (
     <div className="stack">
       <div className="grid-2">
         <Metric
-          label="LLM spend"
+          label="Estimated LLM spend"
           value={unpriced ? "unpriced" : `$${spend.toFixed(4)}`}
         >
           <span className="stat">
             {unpriced
               ? `${cost.calls} calls, no rates configured — never reported as free`
-              : `${cost.calls} calls`}
+              : unpricedCalls > 0
+                ? `${cost.calls} calls, plus ${unpricedCalls} with no price (not included)`
+                : `${cost.calls} calls`}
           </span>
         </Metric>
 
@@ -55,6 +67,33 @@ export function CostPanel({ cost, findings }: { cost: Cost | null; findings: Fin
           </span>
         </Metric>
       </div>
+
+      {(priceWarnings.length > 0 || unpricedCalls > 0) && (
+        <div className="card" role="note">
+          <div className="card__head">
+            <span className="card__kind">Pricing</span>
+          </div>
+          <div className="card__body">
+            <span className="stat">
+              Prices only convert tokens to dollars here — there is no spending limit, and
+              nothing below stops a call.
+            </span>
+            {priceWarnings.map((warning) => (
+              <p key={`${warning.model}-${warning.state}`} style={{ margin: 0 }}>
+                {warning.message}
+              </p>
+            ))}
+            {(cost.unpriced ?? [])
+              .filter((row) => !priceWarnings.some((w) => w.model === row.model && w.state === "missing"))
+              .map((row) => (
+                <p key={row.model} style={{ margin: 0 }}>
+                  {row.calls} call{row.calls === 1 ? "" : "s"} to {row.model} have no price in{" "}
+                  <code>config/model_prices.json</code>, so they are not in the total.
+                </p>
+              ))}
+          </div>
+        </div>
+      )}
 
       {cost.by_node.length > 0 && (
         <div className="card">

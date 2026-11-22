@@ -59,7 +59,6 @@ subject_similarity: 0.86
 # NLI is a permissive filter. Lowering this sends more pairs to the LLM.
 nli_contradiction_threshold: 0.6
 
-max_llm_cost_usd_per_run: 5.0
 max_documents_per_run: 25
 small_sample: false
 small_sample_sections: 3

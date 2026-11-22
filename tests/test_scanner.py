@@ -186,6 +186,18 @@ def test_unsupported_formats_are_left_alone() -> None:
         assert not supported(name)
 
 
+def test_operating_system_files_and_rulebook_lookalikes_are_not_documents(
+    tmp_path: Path,
+) -> None:
+    """Quarantining these listed them in the final document as "not analysed"
+    sources. They are not sources at all."""
+    write(tmp_path / "01_msa.docx")
+    for name in ("Thumbs.db", "desktop.ini", "Icon\r", "rulebook.yml"):
+        write(tmp_path / name)
+
+    assert [e.path.name for e in scan_pile(tmp_path)] == ["01_msa.docx"]
+
+
 def test_the_word_lock_file_is_excluded_from_a_real_walk(tmp_path: Path) -> None:
     """The single most likely stray file in a folder someone is working in.
     Ingesting one produces a "document" of ownership metadata."""

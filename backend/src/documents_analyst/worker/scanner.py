@@ -14,6 +14,7 @@ See docs/WORKER_RUNTIME.md § "What \"scanning\" actually is".
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import time
 from collections.abc import Callable, Collection, Iterator
@@ -45,12 +46,30 @@ when complete, so the finished file arrives as a new path anyway."""
 
 IGNORED_DIRS = {".git", "__pycache__", ".DS_Store", "node_modules", ".Trash"}
 
+IGNORED_NAMES = {"thumbs.db", "ehthumbs.db", "desktop.ini", "icon\r"}
+"""Files the operating system drops into any folder (Windows thumbnail caches and
+folder settings, the macOS custom-icon file). Not documents anyone put there, so
+not quarantined either — a quarantine would list them in the final document as
+"not analysed" sources. Compared lower-cased."""
+
+RULEBOOK_LOOKALIKES = {"rulebook.yml", "rulebook.json", "rulebook.txt"}
+"""Near-misses for `rulebook.yaml`. Skipped rather than quarantined as unsupported
+documents, and logged once, because the person meant a rulebook and it is not
+being applied."""
+
+LOG = logging.getLogger(__name__)
+_WARNED: set[str] = set()
+
 
 def ignored_name(name: str) -> bool:
     """Name-based, not content-based: a file we shouldn't read must be excluded
     before we open it, so this can't depend on anything inside it."""
     lowered = name.lower()
-    return name.startswith(IGNORED_PREFIXES) or lowered.endswith(IGNORED_SUFFIXES)
+    return (
+        name.startswith(IGNORED_PREFIXES)
+        or lowered.endswith(IGNORED_SUFFIXES)
+        or lowered in IGNORED_NAMES
+    )
 
 
 def supported(name: str) -> bool:
@@ -129,7 +148,14 @@ def _walk(directory: Path, unreadable: list[str]) -> Iterator[ScanEntry]:
                 continue
             if not entry.is_file(follow_symlinks=False):
                 continue
-            if not supported(entry.name):
+            if entry.name == "rulebook.yaml":
+                continue
+            if entry.name.lower() in RULEBOOK_LOOKALIKES:
+                if entry.path not in _WARNED:
+                    _WARNED.add(entry.path)
+                    LOG.warning(
+                        "%s is not applied: the rulebook must be named rulebook.yaml", entry.path
+                    )
                 continue
             stat = entry.stat()
         except FileNotFoundError:

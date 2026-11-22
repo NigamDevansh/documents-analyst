@@ -11,7 +11,7 @@ import { KeyRequirements } from "./KeyRequirements";
  * `inline` fills the workspace while no folder has been found yet, because that is
  * exactly when someone needs to know where to put one.
  *
- * See README.md § "Quick start".
+ * See README.md § "Run it locally".
  */
 export function SetupGuide({
   health,
@@ -27,8 +27,25 @@ export function SetupGuide({
   // last step and the keys at the top were never seen.
   const done = useRef<HTMLButtonElement>(null);
   useEffect(() => {
+    if (variant !== "modal") return;
+    const previous = document.activeElement as HTMLElement | null;
+    const dialog = done.current?.closest<HTMLElement>(".welcome");
+    if (!dialog) return;
+    const background = Array.from(document.querySelectorAll<HTMLElement>(".shell > *")).filter(node => node !== dialog && !node.contains(dialog));
+    const oldInert = background.map(node => node.inert);
+    background.forEach(node => { node.inert = true; });
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); onDismiss?.(); }
+      if (event.key !== "Tab") return;
+      const nodes = Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input, [tabindex="0"]'));
+      const first = nodes[0], last = nodes[nodes.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener("keydown", key);
     done.current?.focus({ preventScroll: true });
-  }, []);
+    return () => { document.removeEventListener("keydown", key); background.forEach((node, index) => { node.inert = oldInert[index] ?? false; }); previous?.focus({ preventScroll: true }); };
+  }, [variant, onDismiss]);
 
   const watch = health?.watch;
   const root = watch?.path ?? "./watched";

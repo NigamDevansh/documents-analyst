@@ -11,6 +11,8 @@ export interface PileSummary {
   status: PileStatus;
   documents: number;
   quarantined: number;
+  /** Quarantined because extraction kept failing — Retry puts these back in the queue. */
+  retryable?: number;
   pending_decisions: number;
   open_conflicts: number;
   open_findings: number;
@@ -124,6 +126,8 @@ export interface DocumentText {
 export interface Cost {
   cost_usd: string | number;
   calls: number;
+  /** Calls whose model has no price entry: real tokens, unknown dollars. */
+  unpriced?: { model: string; calls: number }[];
   failures: number;
   /** Wall time inside models, retries included. Written per call since the
    * beginning and summed by nothing until it was needed to answer "which stage
@@ -162,12 +166,22 @@ export interface Health {
     requirements: KeyRequirement[];
     ready: boolean;
   };
+  /** Prices never block a call. These say where the cost report is unpriced or uses a
+   * price past its `valid_until`. Optional: an older API omits it. */
+  pricing?: { warnings: PriceWarning[] };
   watch?: {
     path: string;
     deliverable_filename: string;
     pile_concurrency: number;
     scan_interval_s: number;
   };
+}
+
+export interface PriceWarning {
+  model: string;
+  state: "missing" | "expired" | "expiring" | "invalid";
+  valid_until: string;
+  message: string;
 }
 
 export interface KeyRequirement {

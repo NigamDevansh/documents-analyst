@@ -17,7 +17,8 @@ See docs/BACKEND_INTERNALS.md § "Nodes — what each reads and writes".
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -32,9 +33,10 @@ from documents_analyst.graph.context import context_of
 from documents_analyst.graph.state import PileRunState
 from documents_analyst.worker.lease import Fence
 from documents_analyst_core.parsing.sections import split_sections
-from documents_analyst_core.provenance.extract import extract_facts
+from documents_analyst_core.provenance.extract import extract_facts, ground_fact
 from documents_analyst_core.provenance.injection import find_instructions
 from documents_analyst_core.provenance.open_subjects import OpenSubjectResult, extract_open_subjects
+from documents_analyst_core.taxonomy.fields import FIELDS
 from documents_analyst_core.telemetry.sink import timed
 
 LOG = logging.getLogger(__name__)
@@ -62,14 +64,16 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
         with ctx.engine.begin() as conn:
             row = conn.execute(
                 sql(
-                    "SELECT filename, extracted_text FROM documents "
+                    "SELECT filename, extracted_text, extraction_ok FROM documents "
                     "WHERE id = :id AND extracted_text IS NOT NULL"
                 ),
                 {"id": document_id},
             ).first()
             agreement_id = agreement_repo.for_document(conn, document_id)
             already = conn.execute(
-                sql("SELECT count(*) FROM facts_and_claims WHERE source_document_id = :id"),
+                sql(
+                    "SELECT count(*) FROM facts_and_claims WHERE source_document_id = :id AND status = 'active'"
+                ),
                 {"id": document_id},
             ).scalar_one()
 
@@ -79,7 +83,7 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
             # one nothing will ever compare.
             continue
 
-        if already:
+        if already and row.extraction_ok is not False:
             # Already read: re-reading ADDS, because `replace_for_document`
             # deletes only unmatched facts (a matched one may be the register's
             # current value or half of a live decision). So a second pass inserts
@@ -111,7 +115,7 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
         # every section failed: `extract_facts` turns an `LLMError` into a
         # `Rejection`, so a quota-exhausted run looks like a contract that stated
         # nothing, and `attempts == 0` over a document with sections separates them.
-        answered = result.attempts > 0 or result.sections_seen == 0
+        answered = result.complete
         ctx.record(
             "extract",
             _Usage(
@@ -136,6 +140,26 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
         # `subject_free`, matched by embedding, never by key.
         open_result = _open_subjects(ctx, fence, document_id, body, row.filename)
 
+        answered = answered and open_result.complete
+        if not answered:
+            # Publish no partial document. Retrying immutable text is safe because
+            # no matched facts from this attempt have been persisted. Each failure is
+            # an attempt, so a section that always fails ends in quarantine (and the
+            # pile moves on) instead of being re-billed on every scan.
+            reasons = [r.reason for r in (*result.rejected, *open_result.rejected) if not r.quote]
+            with ctx.engine.begin() as conn:
+                quarantined = doc_repo.record_extraction_failure(
+                    conn,
+                    fence,
+                    document_id,
+                    reason=(reasons[0] if reasons else "a section returned no usable answer"),
+                    max_attempts=ctx.settings.job_max_attempts,
+                )
+            if quarantined:
+                LOG.warning("%s: extraction kept failing; quarantined", row.filename)
+            continue
+
+        open_result = _consolidate_known_subjects(result.facts, open_result, document_id, body)
         ctx.renew_lease(fence)
         subject_vectors = _subject_embeddings(ctx, open_result.subjects)
         with ctx.engine.begin() as conn:
@@ -209,12 +233,84 @@ def run(state: PileRunState, config: RunnableConfig) -> dict[str, object]:
     return {}
 
 
+def _consolidate_known_subjects(
+    facts: list[Any], result: OpenSubjectResult, document_id: str, body: str
+) -> OpenSubjectResult:
+    """Route taxonomy names and declared aliases through the field/grounding gates.
+
+    The supplementary pass can repeat a known field despite the prompt. Preserve
+    unique facts and evidence; combine only equal values with overlapping spans.
+    """
+
+    def name(value: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+    fields = {
+        name(label): field.key
+        for field in FIELDS
+        for label in (field.key, field.label, *field.aliases)
+    }
+    kinds = {field.key: field.kind for field in FIELDS}
+    remaining = []
+    for subject in result.subjects:
+        key = fields.get(name(subject.subject))
+        if key == "parties":
+            # Contracting parties come only from the dedicated preamble/NER path.
+            continue
+        if key is None:
+            remaining.append(subject)
+            continue
+        candidate, _ = ground_fact(
+            {
+                "field_key": key,
+                "value_text": subject.value_text,
+                "source_quote": subject.citation.quote,
+                "start": subject.citation.start,
+                "end": subject.citation.end,
+            },
+            document_id=document_id,
+            text=body,
+        )
+        if candidate is None or not _fits_kind(kinds[key], candidate):
+            # A name match is not a value match. "Indemnity: mutual indemnification for
+            # third-party claims" names the yes/no field but is a description, not a yes
+            # or no; folded in, it would sit beside the real answer as a second value and
+            # read as a disagreement. Left as an open subject, it still reaches the register.
+            remaining.append(subject)
+            continue
+        duplicate = any(
+            fact.field_key == key
+            and (fact.value_normalized or fact.value_text.casefold())
+            == (candidate.value_normalized or candidate.value_text.casefold())
+            and max(fact.citation.start, candidate.citation.start)
+            < min(fact.citation.end, candidate.citation.end)
+            for fact in facts
+        )
+        if not duplicate:
+            facts.append(candidate)
+    return replace(result, subjects=remaining)
+
+
+def _fits_kind(kind: str, fact: Any) -> bool:
+    """Whether a value from the open-subject pass is the field's kind of value.
+
+    Typed fields (money, dates, durations, yes/no, percentages) must normalise. An enum
+    has no fixed list here, so it must at least be a short label rather than a sentence.
+    Free text and party lists take anything — that is what they are for."""
+    if kind in ("text", "party_list"):
+        return True
+    if kind == "enum":
+        return len(str(fact.value_text).split()) <= 4
+    return fact.value_normalized is not None
+
+
 def _open_subjects(
     ctx: Any, fence: Fence, document_id: str, body: str, filename: str
 ) -> OpenSubjectResult:
-    """The escape-hatch pass. A failure here costs subjects, never the document —
-    taxonomy facts are the deliverable and open subjects the supplement, so an
-    "anything else?" rate limit must not lose a contract's grounded terms."""
+    """The escape-hatch pass: material terms the taxonomy has no field for. It must
+    complete too — a document is published only when both passes read every
+    section, so a failure here counts an extraction attempt like any other (see
+    `record_extraction_failure`). Nothing from a failed attempt is persisted."""
     with timed() as elapsed:
         result = extract_open_subjects(
             document_id=document_id,
@@ -234,7 +330,7 @@ def _open_subjects(
             attempts=max(result.attempts, 1),
         ),
         latency_ms=elapsed(),
-        ok=result.attempts > 0 or result.sections_seen == 0,
+        ok=result.complete,
     )
     if result.truncated:
         LOG.warning(

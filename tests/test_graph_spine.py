@@ -44,7 +44,7 @@ from documents_analyst_core.portable.ner_gliner import Span
 
 pytestmark = pytest.mark.db
 
-SCRATCH = "analyst_graph_test"
+SCRATCH = "analyst_graph_test_" + uuid.uuid4().hex[:12]
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 QUOTE = "Payment is due Net 30 days from the date of invoice."

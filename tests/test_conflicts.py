@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ from documents_analyst_core.portable.ner_gliner import Span
 
 pytestmark = pytest.mark.db
 
-SCRATCH = "analyst_conflict_test"
+SCRATCH = "analyst_conflict_test_" + uuid.uuid4().hex[:12]
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 PREAMBLE = "This Agreement is entered into between Acme Corporation and Beta Logistics Inc.\n\n"
@@ -1523,4 +1524,6 @@ def test_a_three_way_disagreement_never_takes_the_amendment_fast_lane(
     assert len(items[0]["payload"]["options"]) == 3
     assert items[0]["kind"] == "conflict", "three values cannot be settled by comparing two"
     assert items[0]["payload"]["recommended_value_group"] is None
-    assert "two of 3" in items[0]["recommendation"]
+    # Every step of the chain is checked; the third document's "replacement" has no
+    # verifiable quote, so the chain fails at that step and a person chooses.
+    assert "03_letter.md does not clearly replace 02_amendment.md" in items[0]["recommendation"]

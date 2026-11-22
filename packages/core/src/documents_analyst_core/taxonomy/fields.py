@@ -44,6 +44,8 @@ class FieldDef:
     the model gets about what the field means, so it is written for the model,
     not for us."""
     multi: bool = False
+    aliases: tuple[str, ...] = ()
+    """Unambiguous names for this same field, never broader clause topics."""
 
 
 GROUPS: tuple[str, ...] = ("identity", "commercial", "risk", "lifecycle", "service", "data")
@@ -85,7 +87,17 @@ FIELDS: tuple[FieldDef, ...] = (
         "The total contract value, if stated as a single figure.",
     ),
     FieldDef(
-        "recurring_price", "Recurring price", "money", "The recurring charge per billing period."
+        "recurring_price",
+        "Recurring price",
+        "money",
+        "The recurring charge per billing period.",
+        aliases=(
+            "Monthly fee",
+            "Monthly service fee",
+            "Subscription fee",
+            "Recurring fee",
+            "Recurring charge",
+        ),
     ),
     FieldDef(
         "billing_frequency",
@@ -98,6 +110,11 @@ FIELDS: tuple[FieldDef, ...] = (
         "Payment terms",
         "duration_days",
         'Days allowed to pay an invoice. "Net 30" means 30.',
+        aliases=(
+            "Invoice payment period",
+            "Invoice payment terms",
+            "Payment deadline days",
+        ),
     ),
     FieldDef(
         "late_fee_amount",
@@ -145,6 +162,7 @@ FIELDS: tuple[FieldDef, ...] = (
         "Term length",
         "duration_months",
         "Length of the initial term in months.",
+        aliases=("Initial term", "Initial term length"),
     ),
     FieldDef("auto_renew", "Auto-renew", "boolean", "Whether the agreement renews automatically."),
     FieldDef(
@@ -158,6 +176,7 @@ FIELDS: tuple[FieldDef, ...] = (
         "Termination notice",
         "duration_days",
         "Days of notice required to terminate.",
+        aliases=("Termination notice period",),
     ),
     FieldDef(
         "termination_for_convenience",
