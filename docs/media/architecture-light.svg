@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="580" viewBox="0 0 1000 580" role="img" aria-label="Architecture: dashboard and MCP server call the FastAPI API; API and worker share PostgreSQL; the worker runs a LangGraph lane per pile, calls LLM APIs and local models, and reads and writes the watched folder">
+<defs>
+  <filter id="sh" x="-10%" y="-10%" width="120%" height="140%">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#1f2328" flood-opacity="0.06"/>
+  </filter>
+  <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0 0 L10 5 L0 10 z" fill="#8c959f"/>
+  </marker>
+  <marker id="aa" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0 0 L10 5 L0 10 z" fill="#c4622d"/>
+  </marker>
+</defs>
+<rect x="3" y="14" width="190" height="70" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<rect x="19" y="30" width="36" height="36" rx="9" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(25 36) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></g>
+<text x="67" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#1f2328" text-anchor="start">Dashboard</text>
+<text x="67" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">React · live via SSE</text>
+<rect x="213" y="14" width="190" height="70" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<rect x="229" y="30" width="36" height="36" rx="9" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(235 36) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6"/><path d="M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></g>
+<text x="277" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#1f2328" text-anchor="start">MCP server</text>
+<text x="277" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">for AI agents</text>
+<rect x="577" y="14" width="210" height="70" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<rect x="593" y="30" width="36" height="36" rx="9" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(599 36) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a5 5 0 1 1 1-9.9A6 6 0 0 1 19.5 10 4 4 0 0 1 18 18z"/></g>
+<text x="641" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#1f2328" text-anchor="start">LLM APIs</text>
+<text x="641" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">OpenAI · Gemini · Claude</text>
+<rect x="807" y="14" width="190" height="70" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<rect x="823" y="30" width="36" height="36" rx="9" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(829 36) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></g>
+<text x="871" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#1f2328" text-anchor="start">Local models</text>
+<text x="871" y="64" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">NLI · NER, offline</text>
+<rect x="3" y="150" width="270" height="236" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<rect x="19" y="166" width="36" height="36" rx="9" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(25 172) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></g>
+<text x="67" y="182" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#1f2328" text-anchor="start">API</text>
+<text x="67" y="200" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">FastAPI</text>
+<circle cx="26" cy="240" r="2.2" fill="#c4622d"/>
+<text x="36" y="244" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">Piles, review queue, cost</text>
+<circle cx="26" cy="260" r="2.2" fill="#c4622d"/>
+<text x="36" y="264" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">File uploads</text>
+<circle cx="26" cy="280" r="2.2" fill="#c4622d"/>
+<text x="36" y="284" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">Live event stream (SSE)</text>
+<circle cx="26" cy="300" r="2.2" fill="#c4622d"/>
+<text x="36" y="304" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">Final document download</text>
+<circle cx="26" cy="320" r="2.2" fill="#c4622d"/>
+<text x="36" y="324" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">Health and price warnings</text>
+<rect x="353" y="150" width="270" height="236" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<rect x="369" y="166" width="36" height="36" rx="9" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(375 172) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></g>
+<text x="417" y="182" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#1f2328" text-anchor="start">PostgreSQL</text>
+<text x="417" y="200" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">with pgvector</text>
+<circle cx="376" cy="240" r="2.2" fill="#c4622d"/>
+<text x="386" y="244" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">Facts with exact citations</text>
+<circle cx="376" cy="260" r="2.2" fill="#c4622d"/>
+<text x="386" y="264" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">Decisions and who made them</text>
+<circle cx="376" cy="280" r="2.2" fill="#c4622d"/>
+<text x="386" y="284" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">Stage events (the timeline)</text>
+<circle cx="376" cy="300" r="2.2" fill="#c4622d"/>
+<text x="386" y="304" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">Graph checkpoints, so runs resume</text>
+<circle cx="376" cy="320" r="2.2" fill="#c4622d"/>
+<text x="386" y="324" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="start">Cost of every model call</text>
+<rect x="703" y="150" width="294" height="236" rx="12" fill="#ffffff" stroke="#c4622d" stroke-width="1.5" filter="url(#sh)"/>
+<rect x="719" y="166" width="36" height="36" rx="9" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(725 172) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></g>
+<text x="767" y="182" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#1f2328" text-anchor="start">Worker</text>
+<text x="767" y="200" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">LangGraph · one lane per pile</text>
+<rect x="721" y="232" width="82" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="762.0" y="249.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#1f2328" text-anchor="middle">Resolve</text>
+<path d="M805 245 l5 0" stroke="#8c959f" stroke-width="1.4"/>
+<rect x="813" y="232" width="82" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="854.0" y="249.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#1f2328" text-anchor="middle">Ingest</text>
+<path d="M897 245 l5 0" stroke="#8c959f" stroke-width="1.4"/>
+<rect x="905" y="232" width="82" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="946.0" y="249.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#1f2328" text-anchor="middle">Extract</text>
+<rect x="721" y="272" width="82" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="762.0" y="289.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#1f2328" text-anchor="middle">Match</text>
+<path d="M805 285 l5 0" stroke="#8c959f" stroke-width="1.4"/>
+<rect x="813" y="272" width="82" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="854.0" y="289.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#1f2328" text-anchor="middle">Classify</text>
+<path d="M897 285 l5 0" stroke="#8c959f" stroke-width="1.4"/>
+<rect x="905" y="272" width="82" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="946.0" y="289.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#1f2328" text-anchor="middle">Audit</text>
+<rect x="721" y="312" width="82" height="26" rx="6" fill="#fdf1e8" stroke="#c4622d"/>
+<text x="762.0" y="329.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#c4622d" text-anchor="middle">Review gate</text>
+<path d="M805 325 l5 0" stroke="#8c959f" stroke-width="1.4"/>
+<rect x="813" y="312" width="82" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="854.0" y="329.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#1f2328" text-anchor="middle">Commit</text>
+<path d="M897 325 l5 0" stroke="#8c959f" stroke-width="1.4"/>
+<rect x="905" y="312" width="82" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="946.0" y="329.5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#1f2328" text-anchor="middle">Reconcile</text>
+<text x="850.0" y="360" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="middle">pauses for your review, then resumes</text>
+<text x="850.0" y="376" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="middle">from its checkpoint, even after a restart</text>
+<rect x="3" y="458" width="994" height="104" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<rect x="19" y="474" width="36" height="36" rx="9" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(25 480) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></g>
+<text x="67" y="490" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="15" font-weight="650" fill="#1f2328" text-anchor="start">Watched folder</text>
+<text x="67" y="508" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#59636e" text-anchor="start">on your machine · one sub-folder per pile</text>
+<rect x="67" y="522" width="105.0" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="119.5" y="539.5" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" font-weight="500" fill="#1f2328" text-anchor="middle">watched/acme/</text>
+<rect x="182.0" y="522" width="91.0" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="227.5" y="539.5" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" font-weight="500" fill="#1f2328" text-anchor="middle">01_msa.docx</text>
+<rect x="283.0" y="522" width="84.0" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="325.0" y="539.5" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" font-weight="500" fill="#1f2328" text-anchor="middle">02_sow.pdf</text>
+<rect x="377.0" y="522" width="105.0" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="429.5" y="539.5" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" font-weight="500" fill="#1f2328" text-anchor="middle">03_invoice.md</text>
+<rect x="492.0" y="522" width="105.0" height="26" rx="6" fill="#f6f8fa" stroke="#d1d9e0"/>
+<text x="544.5" y="539.5" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" font-weight="500" fill="#1f2328" text-anchor="middle">rulebook.yaml</text>
+<rect x="607.0" y="522" width="147.0" height="26" rx="6" fill="#fdf1e8" stroke="#c4622d"/>
+<text x="680.5" y="539.5" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" font-weight="600" fill="#c4622d" text-anchor="middle">final-document.docx</text>
+<line x1="98" y1="84" x2="98" y2="148" stroke="#8c959f" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<text x="106" y="120" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#59636e" text-anchor="start">HTTP · SSE</text>
+<line x1="243" y1="84" x2="243" y2="148" stroke="#8c959f" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="251" y="120" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#59636e" text-anchor="start">HTTP</text>
+<line x1="273" y1="250" x2="351" y2="250" stroke="#8c959f" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<text x="312" y="242" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#59636e" text-anchor="middle">SQL</text>
+<line x1="623" y1="230" x2="701" y2="230" stroke="#8c959f" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<text x="662" y="222" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#59636e" text-anchor="middle">state</text>
+<line x1="623" y1="290" x2="701" y2="290" stroke="#c4622d" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#aa)"/>
+<text x="662" y="310" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#59636e" text-anchor="middle">NOTIFY</text>
+<line x1="745" y1="148" x2="745" y2="86" stroke="#8c959f" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="900" y1="148" x2="900" y2="86" stroke="#8c959f" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="753" y="120" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#59636e" text-anchor="start">extract · judge</text>
+<line x1="138" y1="386" x2="138" y2="456" stroke="#8c959f" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="146" y="426" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#59636e" text-anchor="start">uploads</text>
+<line x1="850" y1="386" x2="850" y2="456" stroke="#8c959f" stroke-width="1.6" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<text x="842" y="426" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#59636e" text-anchor="end">scans files · writes the final document</text>
+</svg>

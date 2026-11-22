@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="214" viewBox="0 0 1000 214" role="img" aria-label="Pipeline: ingest, extract, reconcile, human review, deliver final-document.docx">
+<defs>
+  <filter id="sh" x="-10%" y="-10%" width="120%" height="140%">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#1f2328" flood-opacity="0.06"/>
+  </filter>
+  <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0 0 L10 5 L0 10 z" fill="#8c959f"/>
+  </marker>
+  <marker id="aa" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0 0 L10 5 L0 10 z" fill="#c4622d"/>
+  </marker>
+</defs>
+<rect x="3" y="22" width="172" height="172" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<circle cx="89.0" cy="66" r="23" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(77.0 54) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h7l4 4v11a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v4h4"/><path d="M4 7v13a1 1 0 0 0 1 1h10"/></g>
+<text x="89.0" y="114" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#59636e" text-anchor="middle" letter-spacing="1.2">STEP 1</text>
+<text x="89.0" y="136" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#1f2328" text-anchor="middle">Ingest</text>
+<text x="89.0" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="middle">PDF · DOCX · Markdown</text>
+<text x="89.0" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="middle">HTML · plain text</text>
+<line x1="180" y1="108.0" x2="203" y2="108.0" stroke="#8c959f" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="208" y="22" width="172" height="172" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<circle cx="294.0" cy="66" r="23" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(282.0 54) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v6"/><path d="M14 3v4h4"/><path d="M6 3v18h6"/><circle cx="17" cy="17" r="3"/><path d="M19.2 19.2 22 22"/><path d="M9 11h5M9 15h3"/></g>
+<text x="294.0" y="114" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#59636e" text-anchor="middle" letter-spacing="1.2">STEP 2</text>
+<text x="294.0" y="136" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#1f2328" text-anchor="middle">Extract</text>
+<text x="294.0" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="middle">Every value cites</text>
+<text x="294.0" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="middle">its source sentence</text>
+<line x1="385" y1="108.0" x2="408" y2="108.0" stroke="#8c959f" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="413" y="22" width="172" height="172" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<circle cx="499.0" cy="66" r="23" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(487.0 54) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.3 7.2 15.6 10.8M8.3 16.8l7.3-3.6"/></g>
+<text x="499.0" y="114" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#59636e" text-anchor="middle" letter-spacing="1.2">STEP 3</text>
+<text x="499.0" y="136" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#1f2328" text-anchor="middle">Reconcile</text>
+<text x="499.0" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="middle">Conflicts, amendments</text>
+<text x="499.0" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="middle">and rulebook checks</text>
+<line x1="590" y1="108.0" x2="613" y2="108.0" stroke="#8c959f" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="618" y="22" width="172" height="172" rx="12" fill="#ffffff" stroke="#c4622d" stroke-width="1.5" filter="url(#sh)"/>
+<circle cx="704.0" cy="66" r="23" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(692.0 54) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></g>
+<text x="704.0" y="114" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#59636e" text-anchor="middle" letter-spacing="1.2">STEP 4</text>
+<text x="704.0" y="136" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#1f2328" text-anchor="middle">Review</text>
+<text x="704.0" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="middle">You approve or choose;</text>
+<text x="704.0" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="middle">nothing is guessed</text>
+<rect x="652.0" y="11" width="104" height="22" rx="11" fill="#c4622d"/>
+<text x="704.0" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.8">HUMAN IN LOOP</text>
+<line x1="795" y1="108.0" x2="818" y2="108.0" stroke="#8c959f" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="823" y="22" width="172" height="172" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" filter="url(#sh)"/>
+<circle cx="909.0" cy="66" r="23" fill="#fdf1e8" stroke="#e9b48f"/>
+<g transform="translate(897.0 54) scale(1.0)" fill="none" stroke="#c4622d" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/><path d="m8.5 14 2.5 2.5 4.5-5"/></g>
+<text x="909.0" y="114" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#59636e" text-anchor="middle" letter-spacing="1.2">STEP 5</text>
+<text x="909.0" y="136" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#1f2328" text-anchor="middle">Deliver</text>
+<text x="909.0" y="160" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12" font-weight="400" fill="#59636e" text-anchor="middle">final-document.docx</text>
+<text x="909.0" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#59636e" text-anchor="middle">versioned and verified</text>
+</svg>
