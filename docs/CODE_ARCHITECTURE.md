@@ -80,6 +80,7 @@ Concretely:
 | Writing `final-document.docx` | worker only, inside `Commit`'s transaction | The file and its record must change together, fenced on the lease |
 | Reading the document back (`/deliverable/verify`) | API, via `asyncio.to_thread` | python-docx parsing is sync but fast; the UI and MCP want it promptly |
 | Serving the `.docx` | API, `FileResponse` | A file read, resolved by pile name under the API's own `watch_root` |
+| Uploading a source (`POST /piles/{id}/documents`) | API: write the file into the pile folder, `NOTIFY` | The worker's scanner ingests it — one ingestion path, no document row from the API |
 | Everything else the API does | async, DB only | Reads, decision writes, SSE replay from `stage_events` |
 
 No route writes the document. That keeps the "only the worker changes the
@@ -244,7 +245,9 @@ Full layout and reasoning in [`REPO_STRUCTURE.md`](REPO_STRUCTURE.md).
 └───────────────────────────────┘
 
 packages/core  —  sync, no engine, no framework.
-                  Imported directly only by the worker.
+                  The worker does the slow work with it; the API only
+                  reaches cheap helpers through backend modules
+                  (price table, taxonomy labels, record types).
                   Its portable/ subset imports nothing of ours.
 ```
 
@@ -257,9 +260,9 @@ what makes those files copyable.
 
 ## Conventions that follow from the above
 
-**Typing.** `mypy` non-strict on `packages/core` only. It is the shared surface,
-so a wrong type there propagates into three consumers; application wiring is
-less load-bearing.
+**Typing.** `mypy` non-strict over `packages/core/src` **and** `backend/src`
+(`make types`). Scoped to core alone it once reported green while real type
+errors sat in the worker.
 
 **Models.** Pydantic at boundaries (API request/response, config, LLM output
 validation). Frozen dataclasses internally. Validating every internal object
@@ -303,15 +306,15 @@ Two workers appending to one file also interleave; Postgres handles concurrent
 writes correctly.
 
 Cost is reported, never enforced: there is no spending limit, and a model with
-no price in `config/model_prices.json` still runs and is reported as unpriced.
+no price in `config/model_prices.json` still runs and is reported as unpriced
+(`pricing.price_warnings()` names missing, expired or soon-expiring prices on
+`/health`, in the worker's startup log and on the Cost tab).
 
-**`stage_runs` stays a real table** (rather than a view over `stage_events`) for
-typed columns and simpler aggregation. That accepts a real redundancy — the same
-numbers exist in two places — so one discipline closes it:
-
-> A single helper writes the usage event **and** the `stage_runs` row in one
-> transaction. No other code path records cost. If they can only be written
-> together, they cannot disagree.
+**Cost is written in exactly one place.** `StageRunSink` (`db/repo/telemetry.py`)
+buffers each call's `LLMCall` and flushes it into `stage_runs` inside the node's
+write transaction. The per-run total on the closing timeline event
+(`run.finished` / `run.paused` / `run.incomplete`) is read back from those rows
+by `totals_for_run`, never recorded separately — so the two cannot disagree.
 
 The log never repeats those numbers. It references `run_id` so you can correlate,
 and that is all.
@@ -323,7 +326,7 @@ and that is all.
 ### 2.1 Workspace
 
 `uv` workspace, Python pinned to **3.12** (`>= 3.12, < 3.13` — some ML wheels still
-lag on 3.13, and the host here is 3.9 so everything runs in Docker anyway).
+lag on 3.13).
 
 ```toml
 # pyproject.toml  (repo root — workspace only, not a package)
@@ -332,11 +335,9 @@ members = ["packages/core", "backend"]
 
 [tool.uv.sources]
 documents-analyst-core = { workspace = true }
-# All Linux, both architectures. This was scoped to x86_64 on the assumption
-# that /whl/cpu carried no aarch64 wheel — measured false in Phase 2C: it has
-# since torch 2.3.0, and our floor is >=2.3. The narrow marker meant linux/arm64
-# fell through to PyPI and pulled the CUDA build: 2.9GB of nvidia-* plus 652MB
-# of triton, in a CPU-only container. macOS is unaffected either way.
+# All Linux architectures use the CPU index: it carries x86_64 and aarch64
+# wheels, so linux/arm64 never falls through to PyPI's CUDA build.
+# macOS resolves its normal wheel from PyPI.
 torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [[tool.uv.index]]
@@ -345,7 +346,8 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true          # only torch resolves here; everything else uses PyPI
 
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio", "respx", "pytest-cov", "ruff", "mypy", "types-PyYAML"]
+dev = ["pytest>=8.2", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "respx>=0.21",
+       "ruff>=0.6", "mypy>=1.11", "types-PyYAML>=6"]
 ```
 
 The explicit `pytorch-cpu` index is what keeps CUDA out. Default PyPI torch
@@ -396,12 +398,15 @@ wants parsing, Gate 1 and the LLM client. Our image installs `core[ml]`.
 | `documents-analyst-core` | workspace member |
 | `fastapi>=0.115` | async API |
 | `uvicorn[standard]>=0.30` | ASGI server |
-| `sqlalchemy>=2.0.30` | Core layer; async engine for API, sync for worker |
+| `sqlalchemy[asyncio]>=2.0.30` | Core layer; async engine for API, sync for worker. The extra brings greenlet, which `run_sync` needs |
 | `psycopg[binary,pool]>=3.2` | **One driver.** LangGraph's checkpointer uses psycopg3 — asyncpg would mean two drivers in one process |
 | `pgvector>=0.3` | `Vector` type + `.cosine_distance()` |
 | `langgraph>=0.2.28` | State machine with interrupts |
 | `langgraph-checkpoint-postgres>=2.0` | Durable checkpoints, same driver |
 | `sse-starlette>=2.1` | Our SSE endpoint, with correct disconnect handling |
+| `pydantic>=2.7` · `pydantic-settings>=2.3` | API schemas, MCP tool arguments, `Settings` |
+| `pyyaml>=6` | `rules/loader.py` reads `rulebook.yaml`; `settings.py` reads `config/runtime.yaml` |
+| `python-multipart>=0.0.9` | The upload endpoint's form parsing |
 | `mcp>=1.2` | our 7-tool server |
 | `python-docx>=1.1` | Writes `final-document.docx` (`deliverable.py`). Source `.docx` files are read without it — see `CORE_INTERNALS.md` |
 
@@ -409,17 +414,19 @@ wants parsing, Gate 1 and the LLM client. Our image installs `core[ml]`.
 write our own splitter, because generic text splitters discard character
 offsets and Gate 1 depends on them.
 
-### 2.4 Docker — one image, two entrypoints
+### 2.4 Docker — one image, several entrypoints
 
-Confirmed decision. The API process carries torch it never imports, but it is
-the same image so there is no extra storage, and `make full-up` stays a
-single build from a fresh clone.
+Confirmed decision: api, worker, mcp, migrate and pytest all run the same image.
+The API process carries torch it never imports, but it is the same image so
+there is no extra storage, and `make up` stays a single build from a fresh clone.
 
 ```
-stage 1  deps      uv sync --frozen --no-install-project --extra ml
-stage 2  models    branches from deps; prefetches NLI, GLiNER
-stage 3  builder   branches from deps; installs workspace source into the venv
-stage 4  runtime   python:3.12-slim + builder venv + models cache, non-root
+stage 1   deps      uv sync --frozen --no-install-project --extra ml
+stage 2   models    branches from deps; prefetches NLI, GLiNER
+stage 3   builder   branches from deps; installs workspace source into the venv
+stage 3b  frontend  node:24-slim; npm ci + npm run build → /ui/dist
+stage 4   runtime   python:3.12-slim + builder venv + models cache
+                    + dashboard at /app/static, non-root
 ```
 
 `models` must branch from `deps`, not `builder`: then ordinary application
@@ -436,8 +443,8 @@ offline promise. First build runs ~5–10 minutes; every build after that is cac
 | `text-embedding-3-small` or `gemini-embedding-001` | remote | OpenAI or Gemini API, requested at 384 dimensions | Fact-key embeddings for matching open subjects; selected independently of the LLM provider |
 | `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` | ~184M | transformers + torch | Tier 2 of the conflict classifier — prose pairs only |
 | `knowledgator/gliner-pii-base-v1.0` | ~300M | gliner + torch | Party candidates (preamble only) |
-| `LLM_MODEL_EXTRACT` | remote | provider SDK | Fact extraction per section — **the bulk of spend** |
-| `LLM_MODEL_JUDGE` | remote | provider SDK | Adjudication, judge rules, party pick, doc-type routing, chunk context, prose summary |
+| `LLM_MODEL_EXTRACT` | remote | provider SDK | Fact extraction per section and open-subject extraction — **the bulk of spend** |
+| `LLM_MODEL_JUDGE` | remote | provider SDK | Adjudication (Classify), judge rules (Audit), party pick (Ingest) |
 
 **The `xsmall` checkpoint this table used to name does not exist.** Caught in
 Phase 2C when `prefetch_models.py` failed against the live Hub, not by reading.
@@ -471,10 +478,10 @@ or pretend to work.
 ### 2.6 Tooling
 
 - **ruff** — lint *and* format. One tool replacing black + isort + flake8.
-- **mypy** — non-strict, `packages/core` only. It is the shared surface, so a
-  wrong type there propagates into three consumers. Strict typing on
-  application wiring generates busywork rather than catching bugs.
-- **GitHub Actions** — spin up pgvector, run migrations, run the offline suite.
+- **mypy** — non-strict, over `packages/core/src` and `backend/src`. Strict
+  typing on application wiring generates busywork rather than catching bugs.
+- **GitHub Actions** (`.github/workflows/ci.yml`) — dashboard checks, then build
+  the image and run the offline suite against pgvector.
   A green CI run demonstrates the system proves itself, instead of asking a
   reader to take it on trust.
 
@@ -496,11 +503,12 @@ covers both capabilities. Claude requires an additional OpenAI or Gemini key
 because it has no embedding model. `EMBEDDING_MODEL` overrides the provider
 default (`text-embedding-3-small` or `gemini-embedding-001`).
 
-The dashboard blocks the workspace with a setup screen until
+The dashboard blocks the workspace with a setup screen (`SetupGate`) until
 `/health` reports `setup.ready`. Its requirements list key presence, selection
 reasons and model names without exposing credentials; it polls every four
-seconds. After saving `.env`, rerun `make up` to reload the containers.
-The worker still discovers and ingests while keys are missing.
+seconds. After saving `.env`, rerun `make up` to reload the containers (or
+restart `make api` / `make worker-local` on the host). The worker still
+discovers and ingests while keys are missing.
 
 Loaded once via `pydantic-settings` into a frozen application `Settings` object.
 Application behaviour reads those injected settings; the portable model-cache

@@ -22,12 +22,15 @@ backend/src/documents_analyst/
 │   ├── deps.py          connection + settings injection
 │   ├── schemas.py       pydantic request/response
 │   ├── events.py        SSE fan-out (one LISTEN, many subscribers)
+│   ├── brand.py         product name + icon for the API title and the no-bundle status page
 │   └── routes/          piles · documents · decisions · deliverable · citations · events · cost
 ├── worker/              sync — see WORKER_RUNTIME.md
 │   ├── main.py  scanner.py  ingest.py  lease.py  queue.py  runner.py  notify.py
 ├── graph/
 │   ├── build.py         StateGraph wiring + Postgres checkpointer
 │   ├── state.py         PileRunState
+│   ├── checkpointer.py  PostgresSaver on search_path=langgraph,public
+│   ├── context.py       RunContext: engine, settings, models, LLM clients, telemetry
 │   └── nodes/           ingest · extract · ground · match · classify ·
 │                        audit · human_gate · commit · resolve · reconcile
 ├── rules/               loader.py (YAML → Rule) · evaluator.py (5 ops + judge)
@@ -55,6 +58,10 @@ of one pile are ever in flight at once. Grounding (Gate 1) happens inside
 `Extract`, per quote (§2.5). The cross-file stages — `Match`, `Classify`
 (conflicts and amendments), `Audit` against the rulebook, `HumanGate`, and the
 `Commit` that writes the final document — happen **once** for the whole batch.
+The batch is capped at `max_documents_per_run` (`config/runtime.yaml`, default
+25). If any document is still waiting after `Extract` — over the cap, or a failed
+extraction not yet out of attempts — the run ends there as `run.incomplete`
+rather than classifying a partial pile, and the next run continues.
 
 It is not "finish file 1, including the final document, before file 2". A
 conflict needs two files, so the document is written once per review round, not
@@ -101,10 +108,12 @@ Nothing in `documents_analyst/` reads those tables. A checkpoint is the graph ru
 internal representation, and querying it behind LangGraph's back is how a resume
 starts disagreeing with itself about where it was.
 
-### 2.3 The state — six fields, all control flow
+### 2.3 The state — a handful of fields, all control flow
 
 ```python
 class PileRunState(TypedDict):
+    review_pending: NotRequired[bool]
+    budget_id: NotRequired[str]   # legacy, read by nothing
     pile_id: str
     run_id: str
     lease_epoch: int
@@ -121,9 +130,11 @@ class PileRunState(TypedDict):
 | `document_ids` | The batch this run is responsible for | Queue read at run start: documents in this pile with `status='ingested'` |
 | `audit_pass` | Whether this is the pre-gate audit or the post-commit one. Nothing in the database records this, so it *must* live in state | Set to `1` by the graph, bumped to `2` by `Reconcile` |
 | `attempt` | Bounded node retries | Incremented by our retry wrapper |
+| `review_pending` | `Commit` found an approval whose evidence changed and sent it back; route to `HumanGate` again instead of `Reconcile` | Set by `Commit` |
+| `budget_id` | Nothing. Kept only so checkpoints paused before the spending limit was removed still load | Old checkpoints |
 
 **That is the whole state.** No facts, no conflicts, no findings, no register
-text. Six small values.
+text. A few small values.
 
 ### 2.4 Why everything else is read from the database
 
@@ -133,7 +144,7 @@ Each node opens a short transaction and reads what it needs by `pile_id` /
 1. **A resumed run must see current data.** A run pauses at the gate for two
    hours while a human reviews. If facts were carried in state, resuming would
    act on a two-hour-old snapshot — and a second document may have arrived since.
-2. **The checkpoint stays inspectable.** Six fields is something you can read in
+2. **The checkpoint stays inspectable.** A few fields is something you can read in
    `psql` when debugging. A serialised blob of facts is not.
 3. **The UI needs the same data.** Decisions, facts and findings have to be
    queryable by the API. If they only existed inside a checkpoint, the dashboard
@@ -150,12 +161,12 @@ seconds, that is nothing.
 |---|---|---|
 | `Resolve` | `piles.deliverable_sections`, the file on disk | nothing, unless the file is missing, unreadable or differs — then rewrites it from the record (version unchanged) |
 | `Ingest` | `documents.extracted_text` | `document_chunks`, `agreements`, `documents.agreement_id` |
-| `Extract` | `documents`, taxonomy | `facts_and_claims` — only quotes that pass Gate 1, and only once every section and the open-subject pass answered. An incomplete document writes no facts and counts an attempt (`documents.attempts`); after `job_max_attempts` it is quarantined (`extraction failed after N attempts: …`) and the pile carries on |
+| `Extract` | `documents`, taxonomy | `facts_and_claims` — only quotes that pass Gate 1, and only once every section and the open-subject pass answered. An incomplete document writes no facts and counts an attempt (`documents.record_extraction_failure`); after `job_max_attempts` (3) it is quarantined (`extraction failed after N attempts: …`) and the pile carries on. An open subject named like a taxonomy field (key, label or alias in `taxonomy/fields.py`) joins that field only if it grounds and `_fits_kind` — otherwise it stays an open subject |
 | `Match` | `facts_and_claims` | `claim_slots`, `facts.slot_id`, `facts.value_group` |
 | `Classify` | `claim_slots` + their grouped facts, the source paragraphs | `claim_slots.state`, `facts.role`, `pending_decisions` (§2.5b) |
 | `Audit` | `facts_and_claims`, `rulebook.yaml` | `findings`, `pending_decisions` |
 | `HumanGate` | — | **interrupt**; checkpoint is the pause |
-| `Commit` | approved `pending_decisions`, `claim_slots`, `piles.deliverable_sections` | applies each approved choice to its slot, **then** renders, writes `final-document.docx` if any section changed, and records `piles.deliverable_*`, `deliverable_versions`, `deliverable_commits` — one transaction |
+| `Commit` | approved `pending_decisions`, `claim_slots`, `piles.deliverable_sections` | re-checks each approval against live evidence (`evidence_current`) — a stale one is superseded, re-asked with current options (`refresh_stale`) and the run returns to `HumanGate`; otherwise applies each approved choice to its slot, **then** renders, writes `final-document.docx` if any section changed, and records `piles.deliverable_*`, `deliverable_versions`, `deliverable_commits` — one transaction |
 | `Reconcile` | `piles.deliverable_sections`, the file on disk | an `unverified_document` review item on a mismatch; bumps `audit_pass` to 2 |
 
 #### Two corrections this table used to get wrong
@@ -235,6 +246,9 @@ tier 2  local NLI: no contradiction                     → agree
 tier 3  the judge                                       → _amendment_across, detected_by llm
 ```
 
+The judge (prompt `adjudication/4`) answers `amendment`, `conflict` or `agree`;
+`agree` settles the slot like an NLI pass.
+
 **`_amendment_across`** asks whether the later value replaces the earlier one.
 A value can be stated by several documents, so it shows the judge each document
 stating the later value, newest first, up to `AMENDMENT_CANDIDATES = 3`, against
@@ -244,7 +258,9 @@ capped at `CONTEXT_CHARS = 1000`), because the words that make it an amendment
 usually sit just before the value. An `amendment` verdict holds only if its
 `evidence_quote` is verbatim and found exactly once — first inside the paragraph
 the judge was shown, then in the whole later document. Anything else, including
-an `LLMError`, is a conflict: the safe failure asks a person.
+an `LLMError`, is a conflict: the safe failure asks a person. Fields in
+`NEVER_AMENDED` (`effective_date`) are never taken as amended — every later
+document has its own start date — so a person chooses.
 
 **`_chain`** handles three or more values. Groups are put in arrival order and
 every neighbouring pair must be a verified amendment; then the last value wins
@@ -258,15 +274,17 @@ extraction client `ctx.llm` unless both resolve to the same model.
 ### 2.6 The gate: review everything, then commit once
 
 > **Corrected.** This section described a loop that commits on *each* approval
-> and returns to the gate. The graph does not do that, and building it would
-> have been wasted work — the gate re-interrupts while **anything** is still
-> pending (`human_gate.py`), so a resume in the middle of a review pauses again
-> immediately. There is no `Commit → HumanGate` edge.
+> and returns to the gate. The graph does not do that — the gate re-interrupts
+> while **anything** is still pending (`human_gate.py`), so a resume in the
+> middle of a review pauses again immediately. The one `Commit → HumanGate`
+> edge is for stale evidence: an approval whose sources changed is withdrawn
+> and re-asked rather than applied (`review_pending`).
 
 ```
-Audit(1) → HumanGate ──queue empty──► Commit → Reconcile → Audit(2) → END
-               ▲                   │
-               └── still pending? ──┘   (re-interrupt; the worker walks away)
+Audit(1) → HumanGate ──queue empty──► Commit ──► Reconcile → Audit(2) → END
+              ▲   │                      │
+              │   └─ still pending: re-interrupt (the worker walks away)
+              └──────────────────────────┘ an approval's evidence changed: re-asked
 ```
 
 A run pauses until the queue is **empty**, then commits everything at once. The
@@ -294,7 +312,10 @@ Writing into a watched folder has one obvious hazard: the scanner would ingest
 the system's own output as a new contract. `scan_pile(..., skip_root_names=...)`
 in `worker/scanner.py` skips **exactly** that name at the pile **root** — a
 same-named file in a subfolder is still somebody's source — and the temp file
-the write goes through is a dotfile, which the scanner ignores anyway.
+the write goes through is a dotfile, which the scanner ignores anyway (as it
+does OS clutter like `Thumbs.db`, `desktop.ini` and `Icon\r`; a
+`rulebook.yml`/`.json`/`.txt` is skipped with a one-time warning that the
+rulebook must be named `rulebook.yaml`).
 
 #### The unit is the section
 
@@ -495,15 +516,16 @@ on any that builds SQL, so this stays a property rather than a habit. The one
 | `GET /piles/{id}/deliverable/verify` | Read the file back and compare it to the record |
 | `GET /piles/{id}/deliverable/history` | The `deliverable_versions` rows: what changed, when, on whose decision |
 | `GET /documents/{id}/text` | `extracted_text` for the source pane |
-| `GET /piles/{id}/decisions` | The review queue |
+| `GET /piles/{id}/decisions` · `GET /decisions/{id}` | The review queue · one item |
 | `POST /decisions/{id}/approve` · `/reject` | One item. An approval whose evidence no longer matches the live facts (`evidence_current`) is withdrawn and re-asked (`send_back_for_recheck`: `superseded`, `run.sources_changed`, `NOTIFY`) and answered `409` — returned as a `JSONResponse`, not raised, so the withdrawal is not rolled back |
 | `POST /piles/{id}/decisions/approve-batch` | The amendment fast lane |
 | `GET /piles/{id}/citations` | The claim → source map: field, value, citation, `document_id`, `char_start/end`. Powers click-a-claim-to-highlight; no longer a separate toggle |
 | `GET /piles/{id}/findings` | Standing rulebook verdicts |
 | `GET /piles/{id}/events` | SSE — live pipeline |
-| `POST /piles/{id}/retry` | Re-queue an `error` (or legacy `parked`) pile, or an idle one with files quarantined by failed extraction; attempts reset. `409` otherwise. Pile summaries carry a `retryable` count |
+| `POST /piles/{id}/retry` | Re-queue an `error` (or legacy `parked`) pile, or an idle one with files quarantined by failed extraction; those files go back to `ingested` with attempts reset. `409` otherwise, and never while leased. Pile summaries carry a `retryable` count; the dashboard's **Retry analysis** button uses both |
 | `GET /piles/{id}/cost` | LLM spend, tokens and latency by stage, plus an `unpriced` list (models with no price; their calls count 0, never "free") |
 | `GET /piles/{id}/taxonomy-gaps` | Recurring `subject_free` concepts |
+| `GET /health` · `GET /` | Readiness (below) · the built dashboard, or a status page titled from `api/brand.py` when `STATIC_DIR` has no bundle |
 
 #### Upload writes a file and deliberately no document row
 
@@ -519,10 +541,13 @@ decisions inside a request handler only has to disagree once to put a duplicate
 contract in somebody's register.
 
 So the API does the part only it can do — take the bytes, write them into the
-pile's folder, say "look now" — and discovery does the rest, exactly as it does
-for a file dragged in with Finder. **There is one ingestion path.** The cost is
-honest and small: `202 Accepted` with no document id, because the document does
-not exist yet.
+pile's folder (a unique dotfile staging name, then an atomic rename), say "look
+now" — and discovery does the rest, exactly as it does for a file dragged in
+with Finder. **There is one ingestion path.** The cost is honest and small:
+`202 Accepted` with no document id, because the document does not exist yet.
+Refused: an unsupported or ignored name (`415`), an empty file or one over the
+size cap, and the deliverable's own filename (`409`). The dashboard's **Upload
+files** button posts here.
 
 #### Who is asking, and may they
 
@@ -546,13 +571,15 @@ naming what is misconfigured, and a health check behind a credential cannot be
 used by whatever restarts the container. `/health` also carries a `watch`
 block — `path`, `deliverable_filename`, `pile_concurrency`, `scan_interval_s` —
 which is what the dashboard's setup guide reads, and `pricing.warnings` from
-`pricing.price_warnings()`: models with no price, or a price past or within 14
-days of its `valid_until`. Prices never block a call. `path` is `watch_dir_host` when
+`pricing.price_warnings()`: a configured model with no price, a price past or
+within 14 days of its `valid_until`, or an unreadable price file. The worker
+logs the same list at startup and the Cost tab shows it. Prices never block a
+call. `path` is `watch_dir_host` when
 Compose set it from `WATCH_DIR`, so the guide shows the folder as the person sees
 it rather than `/data/watched` inside the container; otherwise `watch_root`.
-(Phase 7 will fetch the stream rather
-than use `EventSource`, which cannot send a header; a token in a query string
-would land in every access log.)
+The dashboard is built for the open default: its live stream uses `EventSource`,
+which cannot send a header, so a token-protected deployment would need a
+fetch-based stream (a token in a query string would land in every access log).
 
 ### 3.2 SSE — one listener, many subscribers
 
@@ -584,7 +611,7 @@ Three things fall out of that:
   indistinguishable. Backpressure with no bookkeeping.
 
 The `NOTIFY` is issued by a trigger rather than by our code because
-`stage_events` is written from eleven places, and the one that forgets is
+`stage_events` is written from over a dozen modules, and the one that forgets is
 silent: the row lands, the timeline is right, and only the live stream is
 missing an event.
 
@@ -634,7 +661,7 @@ which should not decide a filesystem read.
 db/tables.py     Core Table objects on one shared MetaData
 db/rows.py       frozen dataclasses returned by repos
 db/repo/*.py     one module per aggregate; every function takes a connection
-db/migrate.py    ~40-line runner over db/migrations/*.sql
+db/migrate.py    small runner over db/migrations/*.sql (`--status` lists applied)
 ```
 
 Repos take a connection rather than opening one, so the **caller owns the
@@ -745,7 +772,9 @@ facts, so what an agent reads and what an approval selects cannot drift.
 
 `approve_item(decision_id, confirm)` re-reads the item and requires `confirm` to
 appear **verbatim** in its `evidence_quote` — or, for a rulebook finding, which
-has no quote because the violation is an *absent* clause, its recommendation.
+has no quote because the violation is an *absent* clause, its recommendation —
+and to be at least `MCP_CONFIRM_MIN_CHARS` long (or the whole evidence, if
+shorter).
 Whitespace is normalised, because a quote copied out of a tool result may have
 been re-wrapped; nothing else is. It is the Gate 1 rule one level up: exact
 substring, no fuzzy matching, no threshold, no model in the loop.
@@ -854,7 +883,13 @@ review. Stale approvals are never recorded as applied.
 
 There is no spending limit. Each run's closing event (`run.finished`,
 `run.paused`, `run.incomplete`) carries `cost_usd`, `calls` and, when a model has
-no price, `unpriced_calls` / `unpriced_models` (`telemetry.totals_for_run`).
+no price, `unpriced_calls` / `unpriced_models` (`db/repo/telemetry.totals_for_run`);
+the Activity timeline shows it as "Finished — this run cost $X".
+
+Approving a pending item whose evidence changed since it was raised returns `409`
+and `send_back_for_recheck` withdraws it (`superseded`), sends an
+`awaiting_review` pile to `idle`, records `run.sources_changed` and wakes the
+worker, so classify asks again with current options.
 
 DOCX sections include verbatim source passages, relative paths and offsets. A
 hashed coverage section lists sources and unavailable content. The staged file

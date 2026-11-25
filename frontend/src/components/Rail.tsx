@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import type React from "react";
 import type { Health, PileSummary } from "../api/types";
+import mark from "../assets/icon.svg";
 
 /** The pile navigator — a folder is a pile, so a list of folders. The status dot
  * is live state readable without reading: `running` pulses, `awaiting_review` is
@@ -33,8 +34,11 @@ export function Rail({
     <nav className="rail" id="pile-navigation" aria-label="Pile navigation">
       <div className="rail__head">
         <span className="wordmark">
-          Contract Pile Analyst
-          <small>{piles.length} pile{piles.length === 1 ? "" : "s"} watched</small>
+          <img className="wordmark__mark" src={mark} alt="" width={28} height={28} />
+          <span>
+            Document Analyst
+            <small>{piles.length} pile{piles.length === 1 ? "" : "s"} watched</small>
+          </span>
         </span>
       </div>
 
@@ -91,7 +95,10 @@ export function Rail({
       <div className="rail__reviewer">{reviewer}</div>
 
       <div className="rail__foot">
-        <span title={health?.degraded ? health.missing_configuration.join("\n") : "fully configured"}>
+        <span
+          className="rail__status"
+          title={health?.degraded ? health.missing_configuration.join("\n") : "fully configured"}
+        >
           <span
             className={`dot dot--${health?.degraded ? "awaiting_review" : "running"}`}
             style={{ display: "inline-block", marginRight: 6 }}

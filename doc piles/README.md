@@ -25,7 +25,7 @@ Start the stack with `make up`, then open http://localhost:8000.
 | Folder | What it demonstrates |
 |---|---|
 | `meridian-health/` | The full workflow. Two agreements in one pile, a conflict to resolve, and an amendment whose approval **creates** a compliance violation. |
-| `acme/` | The same documents `make up` seeds into `watched/acme` from `fixtures/conflict_pile` (only when `WATCH_DIR` is the default `./watched`): a format alias, a corrupt PDF that is quarantined, conflicts and amendments. |
+| `acme/` | The same documents `make up` seeds into `watched/acme` from `fixtures/conflict_pile` (only when `WATCH_DIR` is the default `./watched`): a format alias, a corrupt PDF that is quarantined, conflicts and amendments. **Retry** does not re-queue the corrupt PDF — it only re-queues files whose extraction failed (quarantined after 3 attempts), since an unparseable file's bytes have not changed. |
 
 ## `meridian-health` — what to look for
 
@@ -42,9 +42,9 @@ Expect on a first run:
 1. **A conflict.** The CareBridge MSA says Net 30, its SOW says Net 45. Both are
    inside policy, so this surfaces as a question for you, not a finding.
 2. **Findings on Northstar.** `R001` (no liability cap stated) and `R002`
-   (Net 60 is outside policy) both fire — verified. The judge rule `R010`
-   (termination is not mutual) is model-driven and may or may not fire on any
-   given run.
+   (Net 60 is outside policy) both fire — verified. The judge rules `R010`
+   (termination is not mutual) and `R011` (advance notice of subprocessors) are
+   model-driven and may or may not fire on any given run.
 3. **A violation you create yourself.** Approve the amendment and the audit
    re-runs: the cap of 480,000 no longer covers twelve months at 55,000
    (660,000), so `R003` fails on the second pass having passed on the first.
@@ -63,11 +63,19 @@ mkdir watched/my-vendor                 # or "$WATCH_DIR"/my-vendor
 cp ~/contracts/*.pdf watched/my-vendor/
 ```
 
-`.pdf`, `.docx`, `.txt`, `.md` and `.html` are read. The next scan picks the
-folder up — no restart needed.
+`.pdf`, `.docx`, `.txt`, `.md`/`.markdown` and `.html`/`.htm` are read. The
+next scan picks the folder up — no restart needed.
+
+To add files to a pile that already exists you can also use the dashboard's
+upload button (`POST /piles/{pile_id}/documents`). It writes the file into that
+pile's folder and wakes the worker; discovery then ingests it like any other
+file. Unsupported formats are refused (415), and so is a file named
+`final-document.docx` (409).
 
 Add a `rulebook.yaml` to the folder to get compliance findings; without one the
-audit stage runs and simply reports nothing. Copy one of the rulebooks here as a
+audit stage runs and simply reports nothing. The name must be exactly
+`rulebook.yaml` — `rulebook.yml`/`.json`/`.txt` are skipped with a log line, not
+applied. Copy one of the rulebooks here as a
 starting point. Rules are re-read on the next scan, so editing one takes effect
 without a restart.
 

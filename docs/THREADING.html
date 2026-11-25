@@ -1,4 +1,4 @@
-<title>Threads in documents-analyst, by example</title>
+<title>Threads in Document Analyst, by example</title>
 
 <style>
   :root {
@@ -87,7 +87,7 @@
 <div class="wrap">
 
 <header>
-  <h1>Threads in documents-analyst, by example</h1>
+  <h1>Threads in Document Analyst, by example</h1>
   <p class="sub">Two folders of contracts are waiting, each is processed on its own
   thread, a human approves one change, and the register updates. Here is what each
   thread does, what the threads share and how that is made safe, why files
@@ -316,8 +316,8 @@ while the main thread goes back to its timer. Each lane
         <!-- 6 -->
         <rect x="140" y="316" width="290" height="54" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.4"/>
         <text x="152" y="333" font-family="system-ui, sans-serif" font-size="11.5" font-weight="650" fill="var(--accent)">pass 3 — files settled</text>
-        <text x="152" y="348" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">lease acquired · epoch 1 · ingest 3 docs</text>
-        <text x="152" y="362" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">then a pile lane runs the graph — minutes</text>
+        <text x="152" y="348" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">lease acquired · ingest 3 docs · released</text>
+        <text x="152" y="362" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">a lane claims it (new epoch) · runs the graph</text>
         <text x="100" y="344" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">30.7 s</text>
 
         <!-- 7 -->
@@ -341,7 +341,7 @@ while the main thread goes back to its timer. Each lane
         <!-- 9 -->
         <rect x="140" y="534" width="290" height="54" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.4"/>
         <text x="152" y="551" font-family="system-ui, sans-serif" font-size="11.5" font-weight="650" fill="var(--accent)">wait cut short — resume</text>
-        <text x="152" y="566" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">lease re-acquired · epoch 2</text>
+        <text x="152" y="566" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">lease re-acquired · a higher epoch</text>
         <text x="152" y="580" font-family="system-ui, sans-serif" font-size="10" fill="var(--accent)">a lane resumes from the checkpoint → commit</text>
         <text x="100" y="562" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="10.5" fill="currentColor" opacity=".6">250 s</text>
       </svg>
@@ -433,7 +433,7 @@ while the main thread goes back to its timer. Each lane
   <h2>Why there is no heartbeat thread</h2>
 
   <p>The lease has a 90-second TTL, so something has to keep renewing it during a long
-  run. The obvious answer is a background thread ticking every 30 seconds. documents-analyst
+  run. The obvious answer is a background thread ticking every 30 seconds. Document Analyst
   renews it <strong>inline</strong> instead — before each document in
   <code>ingest.py</code>, and before each bounded unit of graph work (an embedding
   batch, a model request) through <code>renew_lease</code> in
@@ -445,7 +445,7 @@ while the main thread goes back to its timer. Each lane
   <figure>
     <div class="plate">
       <svg viewBox="0 0 780 400" role="img"
-           aria-label="Two timelines compared. On the left, a heartbeat thread keeps renewing the lease every thirty seconds while the main thread is stuck on a hung LLM call, so the pile stays locked forever and no other worker can take over. On the right, documents-analyst renews the lease inline before each unit of work, so a hung call lets the lease expire, another worker takes over with epoch two, and the original worker's late write is rejected because its epoch is stale.">
+           aria-label="Two timelines compared. On the left, a heartbeat thread keeps renewing the lease every thirty seconds while the main thread is stuck on a hung LLM call, so the pile stays locked forever and no other worker can take over. On the right, Document Analyst renews the lease inline before each unit of work, so a hung call lets the lease expire, another worker takes over with epoch two, and the original worker's late write is rejected because its epoch is stale.">
         <defs>
           <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
             <polygon points="0,1 10,5 0,9" fill="currentColor"/>
@@ -480,7 +480,7 @@ while the main thread goes back to its timer. Each lane
 
         <!-- RIGHT panel -->
         <rect x="408" y="14" width="356" height="372" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.4"/>
-        <text x="424" y="38" font-family="system-ui, sans-serif" font-size="12.5" font-weight="650" fill="var(--accent)">renewed inline — documents-analyst</text>
+        <text x="424" y="38" font-family="system-ui, sans-serif" font-size="12.5" font-weight="650" fill="var(--accent)">renewed inline — Document Analyst</text>
         <text x="424" y="55" font-family="system-ui, sans-serif" font-size="10.5" fill="var(--accent)" opacity=".85">the renewal is proof of progress</text>
 
         <g font-family="ui-monospace, Menlo, monospace" font-size="10" fill="currentColor" opacity=".6">

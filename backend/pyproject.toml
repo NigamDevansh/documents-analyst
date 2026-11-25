@@ -1,7 +1,7 @@
 [project]
 name = "documents-analyst"
 version = "0.1.0"
-description = "Document pile analyst: API, worker, graph, MCP server."
+description = "Document Analyst: API, worker, graph, MCP server."
 requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }
 

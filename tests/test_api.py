@@ -1032,7 +1032,8 @@ def test_without_a_build_the_root_explains_itself(engine: Engine, tmp_path: Path
     settings = settings_for(engine, tmp_path, static_dir=tmp_path / "no-build-here")
     with TestClient(create_app(settings)) as bare:
         body = bare.get("/").text
-    assert "Contract Pile Analyst" in body
+    assert "Document Analyst" in body
+    assert 'rel="icon"' in body  # the tab shows the mark even before the build
     assert "make ui-build" in body
 
 

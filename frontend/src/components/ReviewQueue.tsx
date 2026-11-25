@@ -99,7 +99,7 @@ function Card({
     >
       <header className="card__head">
         <span className={`pill pill--${item.kind === "amendment" ? "resolved" : "disputed"}`}>
-          {item.kind}
+          {item.kind.replace(/_/g, " ")}
         </span>
         {item.payload?.field_key && <span className="card__kind">{item.payload.field_key}</span>}
         <span className="spacer" />

@@ -181,7 +181,7 @@ def test_a_real_contract_is_not_ignored() -> None:
 
 def test_unsupported_formats_are_left_alone() -> None:
     """A pile is a folder someone uses. Spreadsheets and images live there too,
-    and refusing them quietly is right — the README says we do not read them."""
+    and refusing them quietly is right — only the supported formats are read."""
     for name in ("budget.xlsx", "logo.png", "rulebook.yaml"):
         assert not supported(name)
 
@@ -447,8 +447,8 @@ def test_no_mutating_write_takes_a_bare_pile_id() -> None:
 
 
 def test_no_embedding_key_degrades_to_discovery_rather_than_crashing() -> None:
-    """The README promises a checkout with an untouched `.env` starts and names
-    what is missing. Embeddings used to be a baked local model, so this could
+    """A checkout with an untouched `.env` must start and name what is
+    missing. Embeddings used to be a baked local model, so this could
     only fail on a broken image; it is a missing key now, which is the ordinary
     state of a first run — and `docker compose up` answered it with a traceback
     and a restart loop, which reads as "this project is broken".

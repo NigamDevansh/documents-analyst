@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="214" viewBox="0 0 1000 214" role="img" aria-label="Pipeline: ingest, extract, reconcile, human review, deliver final-document.docx">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="214" viewBox="0 0 1000 214" role="img" aria-label="Pipeline: ingest, extract, cross-check, human review, deliver final-document.docx">
 <defs>
   <filter id="sh" x="-10%" y="-10%" width="120%" height="140%">
     <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000000" flood-opacity="0.35"/>
@@ -30,7 +30,7 @@
 <circle cx="499.0" cy="66" r="23" fill="#2b1d13" stroke="#7a4a2a"/>
 <g transform="translate(487.0 54) scale(1.0)" fill="none" stroke="#f0a46c" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.3 7.2 15.6 10.8M8.3 16.8l7.3-3.6"/></g>
 <text x="499.0" y="114" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#9198a1" text-anchor="middle" letter-spacing="1.2">STEP 3</text>
-<text x="499.0" y="136" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#e6edf3" text-anchor="middle">Reconcile</text>
+<text x="499.0" y="136" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#e6edf3" text-anchor="middle">Cross-check</text>
 <text x="499.0" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="middle">Conflicts, amendments</text>
 <text x="499.0" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#9198a1" text-anchor="middle">and rulebook checks</text>
 <line x1="590" y1="108.0" x2="613" y2="108.0" stroke="#6e7681" stroke-width="1.6" marker-end="url(#ah)"/>

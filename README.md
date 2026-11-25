@@ -25,7 +25,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/pipeline-dark.svg">
-  <img src="docs/media/pipeline-light.svg" alt="Ingest, extract, reconcile, human review, deliver final-document.docx" width="100%">
+  <img src="docs/media/pipeline-light.svg" alt="Ingest, extract, cross-check, human review, deliver final-document.docx" width="100%">
 </picture>
 
 ## Demo

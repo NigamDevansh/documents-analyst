@@ -1,6 +1,6 @@
 # Global runtime configuration — tracked, non-secret, and shared by every run.
 #
-# Edit this file for operational behaviour: scanner cadence, budgets, timeouts,
+# Edit this file for operational behaviour: scanner cadence, run sizes, timeouts,
 # paths, transport, logging, and the default model catalogue. `.env` is only
 # for credentials, connection secrets, and selecting a model/provider for one
 # deployment. Environment variables still override these values when Docker or

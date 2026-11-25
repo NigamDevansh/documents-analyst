@@ -1,12 +1,15 @@
 # Development and runtime modes
 
+How to work on Document Analyst (repo and packages: `documents-analyst`).
+
 Use the local-development mode while building features. It keeps Postgres and
 pgvector in Docker, while the API, worker, migrations, and tests run from your
 local virtual environment. Use the full Docker mode for reviewer parity and CI.
 
 ## Local development (recommended)
 
-Prerequisites: Docker Desktop, Python 3.12, and `uv`.
+Prerequisites: Docker Desktop, Python 3.12, `uv`, and Node.js with npm (for
+the dashboard build).
 
 Configure one OpenAI or Gemini key for both extraction and embeddings, or a
 Claude key plus an OpenAI or Gemini embedding key. Blank `LLM_PROVIDER` picks
@@ -21,11 +24,15 @@ cp .env.example .env
 # Edit config/runtime.yaml for paths, timeouts, scanner and runtime defaults.
 make db-up
 make migrate-local
+make ui-build      # once, and after frontend changes: builds frontend/dist
 make api
 ```
 
-Open <http://localhost:8000>. `make api` has reload enabled; stop it with
-`Ctrl-C`. Run the worker in a second terminal when needed:
+Open <http://localhost:8000>. `make api` has reload enabled and serves
+`frontend/dist`; without a build it shows a plain status page instead of the
+dashboard. For hot reload on the dashboard itself, run `make ui` alongside
+`make api` (Vite dev server, proxying the API). Stop either with `Ctrl-C`.
+Run the worker in a second terminal when needed:
 
 ```bash
 make worker-local
@@ -52,15 +59,19 @@ log. See [`docs/WORKER_RUNTIME.md`](docs/WORKER_RUNTIME.md) §1a.
 make seed && make scan-local     # one pass, against the local database
 ```
 
-`make seed` copies the demo pile into `<WATCH_DIR>/acme`. It refuses to replace
-an existing `acme` folder when `WATCH_DIR` is not the repo's own `./watched`, so
-it never overwrites a folder of yours.
+`make seed` copies the demo pile (`fixtures/conflict_pile`) into
+`<WATCH_DIR>/acme`. It refuses to replace an existing `acme` folder when
+`WATCH_DIR` is not the repo's own `./watched`, so it never overwrites a folder
+of yours. More sample piles live in `doc piles/` — copy one into the watched
+folder — and the dashboard's **Upload files** button adds files to the open
+pile (written into its folder; the worker ingests them like any other file).
 
 Local tests use the Docker database when they need one:
 
 ```bash
 make test-local
 make test-db
+make ui-test       # the dashboard's unit tests
 ```
 
 The host reaches the Docker database through:
@@ -118,8 +129,10 @@ Or, without Make:
 docker compose --profile full up --build db migrate api worker
 ```
 
-The `full` profile starts `db`, one-shot `migrate`, `api`, and the worker. Both
-mount `${WATCH_DIR:-./watched}` at `/data/watched`. The
+The `full` profile starts `db`, one-shot `migrate`, `api`, and the worker; the
+API and worker both mount `${WATCH_DIR:-./watched}` at `/data/watched`. `make up`
+also creates `.env` from `.env.example` if missing and, when `WATCH_DIR` is the
+repo's `./watched`, copies the demo pile into `watched/acme`. The
 worker scans `WATCH_ROOT` on its timer, ingests settled files, and runs the
 graph through matching, conflict classification, rulebook audit, the human
 gate and the final-document commit when both key requirements are met.
@@ -146,7 +159,7 @@ See [`docs/TESTING.md`](docs/TESTING.md#3-database).
 ## Useful commands
 
 ```bash
-curl -fsS http://localhost:8000/health | python3 -m json.tool   # incl. watch: path, pile_concurrency
+curl -fsS http://localhost:8000/health | python3 -m json.tool   # setup, watch, pricing.warnings
 make migrate-status     # migration ledger through Docker
 docker compose exec db psql -U analyst -d documents_analyst
 make down               # stop Docker services; preserves database data

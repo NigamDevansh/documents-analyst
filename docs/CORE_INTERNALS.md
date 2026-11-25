@@ -72,7 +72,7 @@ never be lifted out on its own.
 ## 2. Why the folder has two levels
 
 ```
-packages/core/              ← the PROJECT folder: pyproject.toml, tests, README
+packages/core/              ← the PROJECT folder: pyproject.toml, tests
 └── src/documents_analyst_core/       ← the IMPORT name: `import documents_analyst_core`
 ```
 
@@ -130,7 +130,7 @@ Typed, because the graph branches on specific failures and catching broadly
 would swallow real bugs into a "the provider is down" state.
 
 ```
-(base class in errors.py)
+DocumentsAnalystCoreError        (root, errors.py)
 ├── ConfigError                  bad or missing injected config
 ├── ParseError                   document could not be read
 │   └── UnsupportedFormat
@@ -138,8 +138,8 @@ would swallow real bugs into a "the provider is down" state.
 │   └── QuoteNotVerbatim         source_quote absent from extracted_text
 ├── ModelUnavailable             a local model failed to load
 │   └── (carries: model name, env var, capability lost)
-├── LLMError
-│   ├── LLMSchemaViolation       output did not match the schema after retries
+└── LLMError
+    ├── LLMSchemaViolation       output did not match the schema after retries
     └── LLMTransportError        provider unreachable
 ```
 
@@ -167,7 +167,10 @@ restart from zero, and nothing would record that it ever happened. So the client
 retries briefly and then raises; the document stays `ingested` with its
 `attempts` counted, and a later tick tries again. After `job_max_attempts`
 incomplete extractions the backend quarantines it (`extraction failed after N
-attempts: …`) and the rest of the pile carries on; **Retry** re-queues it.
+attempts: …`) and the rest of the pile carries on; **Retry** (`POST
+/piles/{id}/retry`) re-queues it with its attempt count reset to 0. A file that
+could not be *parsed* is quarantined too, but Retry leaves it alone — its bytes
+have not changed.
 
 | Failure | Client behaviour | Then |
 |---|---|---|
@@ -297,9 +300,15 @@ JSON schema that constrains extraction. They cannot drift because they are
 generated from the same list.
 
 A `FieldDef` may carry `aliases`: unambiguous other names for the same field,
-never broader clause topics (`recurring_price` — "Monthly fee", "Subscription
-fee", …; also `payment_terms_days`, `term_length_months`,
-`termination_notice_days`). The open-subject prompt lists them under "Also
+never broader clause topics:
+
+| Field | Aliases |
+|---|---|
+| `recurring_price` | Monthly fee, Monthly service fee, Subscription fee, Recurring fee, Recurring charge |
+| `payment_terms_days` | Invoice payment period, Invoice payment terms, Payment deadline days |
+| `term_length_months` | Initial term, Initial term length |
+| `termination_notice_days` | Termination notice period |
+ The open-subject prompt lists them under "Also
 called", and the backend's `Extract` folds an open subject whose name matches a
 key, label or alias into that field only if it passes Gate 1 and its value fits
 the field's kind (`_fits_kind`: typed kinds must normalise, an enum must be a
@@ -425,11 +434,12 @@ Everything in core is testable with **no database, no network, no API keys**:
 |---|---|
 | `portable/llm_client` | a `FakeLLM` returning canned structured output; each provider's SDK object stubbed |
 | `portable/document_text` | the `.md`/`.docx`/`.pdf` fixtures, plus `fixtures/docx_edge_cases/` |
-| `provenance/verify` | pure function, plain assertions |
+| `portable/verify` | pure function, plain assertions |
 | `parsing/*` | the `.md` fixtures, offsets asserted against known text |
 | `taxonomy` | assert the generated schema matches the SQL seed |
 | `nli`, `ner` | real models where cheap; `stub` implementations otherwise |
-| `telemetry` | a list-collecting sink |
+| `telemetry` | a list-collecting sink; `load_prices` against temp files |
+| `prompts` | wording pinned by `VERSION` + a snapshot hash; injection-boundary properties |
 
 The protocol-per-module shape is what makes this possible — every dependency
 has a fake because every dependency is an interface.
@@ -453,6 +463,12 @@ gone; `truncated` stays as a legacy counter, always 0).
 Portable code imports no application/database module. SDK-native retries are
 disabled and network calls have a 60-second timeout. There is no per-call spend
 hook and no spending limit: every call reports its `Usage`, and the application
-prices it afterwards for the cost report. `telemetry/pricing.load_prices` refuses
-negative or non-finite rates; a model missing from the table costs 0 and is
-reported as unpriced, never blocked.
+prices it afterwards for the cost report (shown at the end of each run).
+
+Core ships **no prices** (`telemetry/pricing.EMPTY`); the application loads
+`config/model_prices.json` with `load_prices`, which refuses negative or
+non-finite rates and treats a missing file as an empty table. A model missing
+from the table costs 0 and is reported as unpriced (`is_priced`,
+`CollectingSink.unpriced_models`), never blocked. Stale or missing rates are the
+backend's concern (`pricing.price_warnings`), surfaced as warnings only — see
+[`config/MODEL_PRICING.md`](../config/MODEL_PRICING.md).

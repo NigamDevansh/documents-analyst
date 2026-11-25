@@ -1,6 +1,8 @@
 # Repository structure
 
-The full folder layout, and the one idea that makes it hold together.
+The full folder layout, and the one idea that makes it hold together. The
+product is shown as **Document Analyst**; the repo, packages and modules keep
+the names `documents-analyst` / `documents_analyst`.
 
 Companion to [`CODE_ARCHITECTURE.md`](CODE_ARCHITECTURE.md) (foundations),
 [`CORE_INTERNALS.md`](CORE_INTERNALS.md) (the shared library) and
@@ -61,7 +63,7 @@ The rules are written at the top of `portable/__init__.py`:
 ```
 documents-analyst/
 │
-├── README.md                    domain, formats, setup, measured metrics, limits
+├── README.md                    overview, demo, quick start, architecture
 ├── DEVELOPMENT.md               working on the code locally
 ├── Makefile                     small local/full runtime and verification shortcuts
 ├── docker-compose.yml
@@ -73,11 +75,11 @@ documents-analyst/
 │   ├── runtime.yaml             tracked non-secret runtime defaults
 │   │                            (incl. deliverable_filename: final-document.docx)
 │   ├── model_prices.json        per-model token prices for the cost report (never a limit)
-│   └── MODEL_PRICING.md         how to keep those prices current
+│   ├── MODEL_PRICING.md         how to keep those prices current
+│   └── README.md                what each config file holds
 │
 ├── packages/core/                          THE SHARED LIBRARY
 │   ├── pyproject.toml           documents-analyst-core
-│   ├── tests/
 │   └── src/documents_analyst_core/
 │       │
 │       ├── portable/            ⭐ ZERO internal imports. Copy-designed.
@@ -104,7 +106,8 @@ documents-analyst/
 │       ├── settings.py          the ONLY place env is read
 │       ├── deliverable.py       final-document.docx: sections, hashes, write, read back, verify
 │       ├── pricing.py           cached price table; price_warnings() for /health, worker, Cost tab
-│       ├── api/                 main · deps · schemas · events · routes/
+│       ├── api/                 main · deps · schemas · events · routes/ ·
+│       │                        brand (product name + icon for the status page)
 │       ├── worker/              main · scanner · ingest · lease · queue · runner · notify
 │       ├── graph/               build · state · checkpointer · context · nodes/
 │       ├── rules/               loader · evaluator
@@ -120,6 +123,8 @@ documents-analyst/
 │       │                Activity · CostPanel · DocumentDownload · SetupGate ·
 │       │                SetupGuide · KeyRequirements
 │       ├── hooks/       useEvents (SSE) · useSplit (draggable divider)
+│       ├── assets/      icon.svg · icon-32.png · apple-touch-icon.png (tab icon;
+│       │                tests/test_brand.py keeps icon.svg equal to api/brand.py)
 │       └── styles/      tokens.css (palette, type, easings) · app.css
 │
 ├── db/migrations/               001..004, raw SQL, readable top to bottom
@@ -136,9 +141,11 @@ documents-analyst/
 ├── watched/                     the default WATCH_DIR — one folder per pile, each
 │                                gets its own final-document.docx; set WATCH_DIR
 │                                in .env to watch a folder elsewhere instead
+├── doc piles/                   sample piles (acme · meridian-health) to copy into watched/
 ├── tests/                       the whole suite, incl. the invariant tests
 ├── .github/workflows/ci.yml     offline suite, image build, dashboard checks
 └── docs/                        these markdown files + THREADING.html · UI_AND_LINKING.html
+    └── media/                   README logo, diagrams and demo GIF
 ```
 
 ---

@@ -44,12 +44,23 @@ Three things make that possible:
 
 ```
 tests/
-├── conftest.py              DB lifecycle, model fixtures, fakes
+├── conftest.py              credential blanking (§7) and a loud warning when
+│                            DATABASE_URL is unset and the db half skipped
+├── review_helpers.py        seeds review options backed by real source facts
 ├── test_<module>.py         one file per area — pure functions through to
 │                            whole graph runs against fixture piles
 ├── test_commit.py           the final document end to end (§5)
+├── test_audit_regressions.py  user-level regressions: complete extraction,
+│                            quarantine, stale evidence, cost reporting
+├── test_amendment_chain.py  three-plus values: chain vs conflict (no DB)
+├── test_price_warnings.py   missing / expiring / expired price warnings
+├── test_brand.py            the API's ICON_SVG equals frontend/src/assets/icon.svg
 └── test_llm_live.py         opt-in, real providers — `live`, skipped by default
 ```
+
+`pytest --collect-only` currently finds about 700 tests: roughly 280 marked
+`db`, 2 marked `models`, 6 marked `live`. The DB-backed modules each build their
+own engine fixture; `test_audit_regressions.py` reuses `test_commit.py`'s.
 
 ### The dashboard's own tests
 
@@ -57,16 +68,24 @@ tests/
 make ui-test          # vitest, no browser, no server
 ```
 
-The unit suite covers `cut` (offsets → highlighted pieces), including Unicode
-code points, `readHash`, and which SSE events force a refetch (`refresh.ts`). Browser regressions exercise delayed pile and
-citation responses, mobile layout, and keyboard review/setup
-behavior against controlled HTTP fixtures. A separate live-stack browser check
-is still needed to verify real ingestion, provider calls, review, and downloads.
+The vitest suite (`frontend/src/api/*.test.ts`) covers `cut` and `lineOf`
+(offsets → highlighted pieces, including Unicode code points), `readHash`, and
+which SSE events force a refetch plus the event cursor (`refresh.ts`).
+
+The Playwright spec (`frontend/e2e/workspace.spec.ts`) starts the Vite dev
+server on `127.0.0.1:5174` and answers every API call from a `page.route`
+fixture — no backend. It covers late pile and citation responses, phone and
+desktop layout, uploading files into the open pile (`POST
+/piles/{id}/documents`), welcome-dialog focus, keyboard review, and setup
+unlocking. A separate live-stack browser check is still needed to verify real
+ingestion, provider calls, review, and downloads.
 
 ```bash
 cd frontend
 npx playwright install chromium
 npm run test:e2e
+# or reuse a local Chrome:
+PLAYWRIGHT_CHROME_EXECUTABLE=/path/to/chrome npm run test:e2e
 ```
 
 `cut` earns its tests because the failure it prevents is silent: highlighting by
@@ -79,13 +98,13 @@ that says it four times, and look completely deliberate doing it.
 |---|---|---|
 | *(none)* | Pure, fast, no DB | runs |
 | `db` | Needs Postgres | runs |
-| `models` | Loads GLiNER / NLI | **runs** |
+| `models` | Loads GLiNER / NLI | **runs** (skips if no model cache) |
 | `live` | Needs a real external API key | **skipped** |
 
 ```bash
-pytest                      # everything except live
-pytest -m "not models"      # fast inner loop
-pytest -m live              # only when a key is present
+pytest                      # everything; live tests skip themselves
+pytest -m "not models"      # fast inner loop (make test-fast)
+pytest -m live              # only with RUN_LIVE_LLM=1 and a key
 ```
 
 The `live` marker covers provider capability checks only
@@ -97,16 +116,20 @@ they are always available. Making them opt-in would leave the integration code �
 exactly the part most likely to break on a different machine — untested unless
 somebody remembered a flag.
 
-They load **once per session** via a session-scoped fixture, so the cost is one
-load for the whole suite rather than one per test.
+There are two of them, in `tests/test_models.py` (DeBERTa NLI and GLiNER). On a
+host without a populated model cache or the `ml` extra they skip with the
+command that fixes it rather than failing.
 
 ---
 
 ## 3. Database
 
 Each DB-backed module derives a server connection from `DATABASE_URL`, creates
-its own scratch database (for example `analyst_api_test`), applies migrations,
-and truncates that scratch database's tables between tests. The database name
+its own scratch database (for example `analyst_api_test_<random>`), applies
+migrations, and truncates that scratch database's tables between tests. Without
+`DATABASE_URL` those modules skip, and `conftest.py` ends the run with a red
+"database-backed tests did not run" banner so the skip is not mistaken for a
+pass. The database name
 in `DATABASE_URL` is not the database those fixtures truncate; application data
 is left intact. The configured user needs permission to create databases.
 
@@ -117,11 +140,13 @@ opt-in profile, so `make full-up` starts application services without tests.
 `make test` explicitly selects the test service.
 
 ```python
-@pytest.fixture(scope="session")
-def db():           # create analyst_test, run db/migrations/*.sql once
+SCRATCH = "analyst_commit_test_" + uuid.uuid4().hex[:12]
+
+@pytest.fixture(scope="module")
+def engine():       # CREATE DATABASE SCRATCH, migrate.run(), drop it afterwards
 
 @pytest.fixture
-def conn(db):       # TRUNCATE … RESTART IDENTITY CASCADE, then yield
+def clean(engine):  # TRUNCATE piles CASCADE; TRUNCATE stage_events, stage_runs
 ```
 
 **Why truncate rather than transaction-rollback.** Rollback-per-test is faster
@@ -181,8 +206,10 @@ rather than concatenated from document text.
 
 ### Time
 
-Lease TTLs are **injected**, not frozen. Tests construct the manager with
-`ttl=0.1s`, so expiry and takeover happen in real time without a clock library.
+Lease TTLs are **injected**, not frozen. Tests call `lease.acquire(...,
+ttl_s=0)`, so the lease is already expired and takeover happens in real time
+without a clock library. Retry backoff works the same way: `sleep` is injected
+into the LLM client.
 
 ---
 
@@ -321,6 +348,9 @@ The behaviours the system promises, each a named test. All offline.
 | The API serves the dashboard, same origin | `test_the_api_serves_the_dashboard_when_one_is_built` |
 | A mistyped path is not answered with the app | `test_a_mistyped_api_path_is_not_answered_with_the_app` |
 | A highlight marks the span, not the first match | `cut` — `frontend/src/api/spans.test.ts` |
+| A verdict about the effective date is never an amendment | `test_an_amendment_verdict_on_the_effective_date_is_never_taken` |
+| Each prompt's wording is pinned by its `VERSION` | `test_every_version_has_a_snapshot` (+ the `SNAPSHOTS` hashes) |
+| The API and the dashboard share one mark | `test_the_api_and_the_dashboard_share_one_mark` |
 | Citation offsets land on their quote over HTTP | `test_every_citation_offset_lands_on_its_own_quote` |
 
 ### The two hardest to write
@@ -344,8 +374,10 @@ the DB strategy is truncate rather than rollback.
 
 `scripts/verify_fixtures.py` asserts every `source_quote` in `ANSWER_KEY.json` is
 a verbatim substring of its document. **Currently 107/107 exact.**
+`scripts/build_fixture_docs.py --check` (also `make fixtures-check`) confirms
+the `.docx` fixtures still match their `.md` sources.
 
-It runs first in CI. If the answer key drifts from the fixtures, every
+Both run in CI before pytest. If the answer key drifts from the fixtures, every
 downstream assertion is checking against a lie — better to fail immediately and
 say so.
 
@@ -389,14 +421,20 @@ the configured catalogue default for other providers.
 `.github/workflows/ci.yml` runs on pushes and pull requests:
 
 ```
-1. verify_fixtures.py                 answer key is honest
-2. ruff check + ruff format --check   lint and format
-3. mypy                              core and backend
-4. docker build (layer cached)        the real image
-5. pgvector service + migrations
-6. pytest                             everything except live
-7. dashboard unit/build/browser checks   Chromium, synthetic HTTP fixtures
+Dashboard checks (Node 24, frontend/)
+  1. npm ci · npm test (vitest) · npm run build
+  2. playwright install chromium · npm run test:e2e   synthetic HTTP fixtures
+Offline application suite
+  3. docker compose --profile full run --build tests   the real image; db +
+                                                       migrate come up first
+     inside it: ruff check · ruff format --check · mypy
+                build_fixture_docs.py --check · verify_fixtures.py
+                pytest -m "not live"
 ```
+
+`frontend/` is mounted read-only into the test container so `test_brand.py`
+can compare the two icon copies (the image itself carries only the built
+dashboard; under `make test`, which does not add that mount, the test skips).
 
 **CI builds the actual image** rather than installing dependencies directly.
 Slower on a cold cache, but it verifies the claim that matters — a stranger
@@ -409,7 +447,7 @@ providers and the local models baked into the image.
 The workflow's commands are exercised locally; a GitHub-hosted run still needs
 the changes pushed to a repository with Actions enabled. No API secrets are
 required. Browser regressions cover delayed responses, mobile navigation,
-Unicode highlights, keyboard review, modal focus, and setup unlocking.
+Unicode highlights, uploads, keyboard review, modal focus, and setup unlocking.
 
 ### `make test` runs in its own service, with no `.env`
 

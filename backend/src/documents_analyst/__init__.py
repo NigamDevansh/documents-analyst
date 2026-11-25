@@ -1,4 +1,4 @@
-"""analyst — the document pile analyst.
+"""Document Analyst — reads a pile of documents, reconciles them, writes the final document.
 
 Four entrypoints over one package:
 

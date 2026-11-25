@@ -210,7 +210,10 @@ exist. Discovery stores a document as `ingested` and releases its lease; the
 runner claims a pile with work — `ingested` originals, a `run.sources_changed`
 newer than its last `run.coverage_updated` (a copy added or removed, an item sent
 back for recheck), orphaned claims, or an approval not yet committed — takes its
-lease in the same statement, and drives the graph over the whole batch. Piles in
+lease in the same statement, and drives the graph over the batch: every ingested
+original with fewer than `job_max_attempts` attempts, in discovery order, capped
+at `max_documents_per_run` (default 25). A run that leaves some behind closes as
+`run.incomplete`, and the lane claims the pile again for the rest. Piles in
 `awaiting_review` or `error` (or legacy `parked`) are never claimed this way. A document that has been
 extracted moves to `extracted` and leaves the queue, which is what stops the
 same pile being run again on the next tick.
@@ -361,7 +364,7 @@ an unreadable folder.
 is exactly when we're most likely to have missed something. Timer scans are
 shallow — skip the hash if path, size, mtime and inode are unchanged. Every
 20th tick is deep again, which bounds how long an mtime-preserving copy can
-hide (~10 minutes, stated in the README).
+hide (~10 minutes: 20 ticks × `scan_interval_s` of 30 s).
 
 **Settling is judged from the age of the mtime, not from two probes.** The
 implementation asks `now - mtime >= SETTLE_SECONDS`, so a worker that crashes
@@ -378,11 +381,14 @@ stalls for longer than the window — is bounded by the deep re-hash.
 reconciles again. The first pass and every `SCAN_DEEP_EVERY`th pass are deep
 scans; all other passes avoid re-hashing an unchanged file.
 
-Phase 5 added the event and one publisher for it. Two things set it: a trigger
-on `pending_decisions` when a decision leaves `pending`, and the upload route
-after it writes a file. Both mean the same thing — *something changed, look
-sooner* — and neither is a source of truth, so a missed notification costs
-latency and not correctness.
+Phase 5 added the event and the `analyst_work` channel that sets it. Its
+publishers: a trigger on `pending_decisions` when a decision leaves `pending`;
+`piles.notify_work`, called by the upload route after it writes a file and by
+**Retry**; and `decisions.send_back_for_recheck` when an approval hits changed
+evidence. All mean the same thing — *something changed, look sooner* — and none
+is a source of truth, so a missed notification costs latency and not
+correctness. Each is delivered on commit, so the worker never wakes for a write
+that rolled back.
 
 `watchdog` was never built, and the reason is the same demotion taken to its
 conclusion: it would only make the scanner wake earlier than the 30-second
@@ -439,15 +445,19 @@ different machine can pick it up.**
 **Startup, in order:**
 
 1. Load and validate config (fail loudly on a bad value, not on first use)
-2. Connect to Postgres, wait for migrations
-3. Report model-cache availability, and log any `pricing:` warning — a model
-   with no price, or one past or near its `valid_until` (prices never block a
-   call)
-4. Open the graph environment once — checkpointer, models, extraction and judge
-   LLM clients — with the two local models wrapped so every pile lane can share
-   them (§1a)
-5. Install the SIGTERM/SIGINT handler
+2. Report model-cache availability, and log any `pricing:` warning from
+   `pricing.price_warnings` — a configured model with no price, or one past or
+   within 14 days of its `valid_until` (prices never block a call)
+3. Create the database engine. The worker does not migrate or wait for
+   migrations itself; in Compose it starts only after `migrate` has exited 0
+4. Install the SIGTERM/SIGINT handler
+5. Open the graph environment once — extraction and judge LLM clients first
+   (key checks, so an empty `.env` says so in a second), then the models, with
+   the two local ones wrapped so every pile lane can share them (§1a), then the
+   checkpointer. A missing LLM or embedding key degrades the worker to
+   discovery and ingest (`--scan-only` does the same on purpose); it does not exit
 6. Start the notify listener (Phase 5), which wakes the loop once on connect
+   (`--once` skips it and the loop: one `run_once` pass, then exit)
 7. Start the timer loop — its first pass is always a **deep** scan
 
 **Shutdown on SIGTERM:** set a stop flag. The scanner stops before acquiring
@@ -526,7 +536,7 @@ network call.
 ## 8. Running more than one worker
 
 ```bash
-docker compose up --scale worker=3
+docker compose --profile full up --scale worker=3
 ```
 
 No configuration is needed. Each worker runs its own `pile_concurrency` lanes,
@@ -597,7 +607,7 @@ between two different agreements.
 flowchart TB
   subgraph W["worker process"]
     MAIN["one main loop<br/>every 30s, or when woken"]
-    SCAN["discover → lease → ingest<br/>(main thread, pile by pile)"]
+    SCAN["discover → lease → ingest → check final document<br/>(main thread, pile by pile)"]
     DRAIN["graph-drain thread<br/>one drain at a time"]
     RESUME["resume piles whose<br/>queue is now empty<br/>(up to N lanes)"]
     RUN["N pile lanes: claim a pile → run the graph → claim the next<br/>(Commit writes final-document.docx)"]
@@ -614,9 +624,9 @@ flowchart TB
   FS --> SCAN
   RUN -->|"final-document.docx<br/>at the pile root"| FS
   SCAN -->|"fenced document writes<br/>status=ingested"| DB
-  SCAN -->|"heartbeat between documents"| DB
+  SCAN -->|"heartbeat before each document"| DB
   RESUME -->|"fresh lease + new epoch<br/>into the checkpoint"| DB
-  API -->|"approval → trigger → NOTIFY"| LISTEN
+  API -->|"approval, upload, retry → NOTIFY"| LISTEN
   LISTEN -.->|"sets one Event —<br/>latency only, never truth"| MAIN
 ```
 
@@ -627,24 +637,35 @@ The continuous worker uses `watch_loop` (§1): discovery and idle-deliverable
 repair run on the timer while one background graph-drain future owns the pile
 lanes. `run_once` remains synchronous for one-shot runs.
 
-Provider attempts have a 60-second timeout and no hidden SDK retries. There is
-no spending limit: prices only convert tokens to dollars, and each run's closing
-event (`run.finished`, `run.paused`, `run.incomplete`) carries `cost_usd`,
-`calls` and, when a model has no price, `unpriced_calls`/`unpriced_models`.
+Each provider attempt has a 60-second timeout and the SDKs' own retries are
+off; the client makes up to `llm_max_retries` attempts (default 3) itself, so
+every one is counted, and a permanent quota error is not retried. There is no
+spending limit: prices only convert tokens to dollars, and each run's closing
+event (`run.finished`, `run.paused`, `run.incomplete`) carries
+`telemetry_repo.totals_for_run` — `cost_usd`, `calls` and, when a model has no
+price, `unpriced_calls`/`unpriced_models` — which the timeline shows as
+"Finished — this run cost $X".
 
-An incomplete extraction counts as an attempt. After `job_max_attempts` the file
-is quarantined with `extraction failed after N attempts: <reason>` and the pile
-moves on, so a section that always fails is not re-billed on every scan.
-**Retry** is accepted for a failed pile, and for an idle one with such files: it
-re-queues them with attempts reset.
+An incomplete extraction counts as an attempt
+(`documents.record_extraction_failure`). After `job_max_attempts` (default 3)
+the file is quarantined with `extraction failed after N attempts: <reason>` and
+the pile moves on, so a section that always fails is not re-billed on every scan.
+**Retry** (`piles.retry`) is accepted only while no lease is live, for a pile in
+`error` (or legacy `parked`), or for an `idle` pile holding such files. It sets
+the pile `idle`, re-queues those files as `ingested` with attempts reset to 0
+(for a failed pile, its extracted originals too), appends `run.retry_requested`
+and notifies the worker.
 
 A source change withdraws only the uncommitted review items whose cited facts
 changed (`invalidate_review` compares each item's evidence with the live facts).
-An identical copy withdraws nothing; a new, replaced, restored or removed file
-also sends an `awaiting_review` pile back to `idle`, so the change is read now
-and its questions join the same review. An approval that hits changed evidence
-gets a 409 and the item is withdrawn and re-asked (`send_back_for_recheck`),
-instead of staying pending and unapprovable.
+Discovery calls it only when a file was added, replaced, restored or removed —
+an identical copy (an alias) touches no review item — and it also sends an
+`awaiting_review` pile back to `idle`, so the change is read now and its
+questions join the same review. An approval that hits changed evidence gets a
+409: `send_back_for_recheck` withdraws the item (`superseded`, never deleted),
+returns a paused pile to `idle`, appends `run.sources_changed` and sends
+`pg_notify`, so the pile runs again and the question is re-asked with the
+options the sources hold now.
 
 Seen hashes reconcile overwritten path ownership even when another copy stays
 live. Superseded facts reactivate when their immutable source returns. Promoted

@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from documents_analyst.api import brand
 from documents_analyst.api.deps import require_token, validate_ids
 from documents_analyst.api.events import EventBroker
 from documents_analyst.api.routes import (
@@ -83,7 +84,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await app.state.engine.dispose()
 
     app = FastAPI(
-        title="Contract Pile Analyst",
+        title=brand.NAME,
         version="0.7.0",
         description="Drop a folder of contracts in. Get back one contract register.",
         lifespan=lifespan,
@@ -195,7 +196,8 @@ def _status_page(settings: Settings) -> str:
         )
 
     return f"""<!doctype html><meta charset="utf-8">
-<title>Contract Pile Analyst</title>
+<title>{brand.NAME}</title>
+<link rel="icon" href="{brand.ICON_DATA_URI}">
 <style>
  body{{font:15px/1.6 system-ui,-apple-system,sans-serif;max-width:44rem;
   margin:3rem auto;padding:0 1.25rem;color:#16181d}}
@@ -210,7 +212,7 @@ def _status_page(settings: Settings) -> str:
  footer{{margin-top:2rem;color:#5b6069;font-size:.9rem;
     border-top:1px solid #e2e5ea;padding-top:.8rem}}
 </style>
-<h1>Contract Pile Analyst</h1>
+<h1>{brand.NAME}</h1>
 <p class="sub">Phase {PHASE}. The dashboard is not built — run <code>make ui-build</code>, or <code>make ui</code> for the dev server.</p>
 {dbline}
 {banner}

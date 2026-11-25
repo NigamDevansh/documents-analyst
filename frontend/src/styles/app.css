@@ -81,13 +81,25 @@ select {
 }
 
 .rail__head {
-  padding: var(--gap-5) var(--gap-4) var(--gap-3);
+  box-sizing: border-box;
+  height: var(--bar-height);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--gap-4);
+  border-bottom: 1px solid var(--rule);
 }
 
 .wordmark {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
   font: 600 var(--step-1) / 1.2 var(--serif);
   letter-spacing: -0.01em;
+}
+
+.wordmark__mark {
+  flex: none;
+  display: block;
 }
 
 .wordmark small {
@@ -116,13 +128,16 @@ select {
   margin: 0;
 }
 
+.rail__status {
+  margin-right: auto; /* status left, the two buttons together on the right */
+}
+
 .rail__foot {
   border-top: 1px solid var(--rule);
   padding: var(--gap-3) var(--gap-4);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--gap-2);
+  gap: var(--gap-1);
   font-size: var(--step--1);
   color: var(--ink-faint);
 }
@@ -262,12 +277,20 @@ select {
 }
 
 .topbar {
+  box-sizing: border-box;
+  min-height: var(--bar-height);
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: var(--gap-2) var(--gap-4);
-  padding: var(--gap-4) var(--gap-5) var(--gap-3);
+  padding: var(--gap-2) var(--gap-5);
   border-bottom: 1px solid var(--rule);
+}
+
+/* Every control in the bar is one height, so they line up as a row. */
+.topbar .btn {
+  height: 32px;
+  padding-block: 0;
 }
 
 .topbar h1 {
@@ -447,7 +470,7 @@ select {
 
 .sheet {
   max-width: 46rem;
-  margin: 0 auto;
+  margin: 0;
   padding: var(--gap-6) var(--gap-5) 6rem;
 }
 
@@ -459,8 +482,6 @@ select {
 
 .sheet__caveat {
   margin: 0 0 var(--gap-5);
-  padding-bottom: var(--gap-5);
-  border-bottom: 1px solid var(--rule);
   color: var(--ink-faint);
   font-size: var(--step--1);
   max-width: 34rem;
@@ -469,6 +490,16 @@ select {
 .term {
   padding: var(--gap-4) 0;
   border-bottom: 1px solid var(--rule);
+}
+
+/* The term whose source is open: tinted, with room so the text never touches
+   the tint's edge. */
+.term--active {
+  margin-inline: calc(-1 * var(--gap-3));
+  padding-inline: var(--gap-3);
+  border-radius: var(--radius);
+  border-bottom-color: transparent;
+  background: var(--accent-wash);
 }
 
 .term__head {
@@ -665,7 +696,7 @@ mark.span {
   gap: var(--gap-4);
   padding: var(--gap-5);
   max-width: 54rem;
-  margin: 0 auto;
+  margin: 0;
   width: 100%;
 }
 
@@ -769,6 +800,7 @@ mark.span {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  text-decoration: none;
   padding: 7px 14px;
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius);
@@ -997,8 +1029,9 @@ table.plain td:first-child {
 }
 
 .reviewer__label {
-  font-size: var(--step--2);
-  letter-spacing: 0.08em;
+  font-size: 0.688rem; /* the same small caps as the "Piles" label above */
+  font-weight: 600;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--ink-faint);
 }

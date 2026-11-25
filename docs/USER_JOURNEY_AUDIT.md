@@ -15,8 +15,15 @@ rows of the next section.
 | Stale review items | An approval on changed evidence withdraws the item and re-asks it, instead of returning 409 for ever. A source change withdraws only the items whose cited facts changed; an identical copy withdraws nothing. |
 | Scheduling | A wake that arrives during a drain starts the next drain as soon as it ends. |
 | Scanner | `Thumbs.db`, `desktop.ini` and macOS `Icon\r` are ignored, not quarantined. `rulebook.yml` and similar near-misses are skipped, with a log line naming the expected `rulebook.yaml`. |
-| Open subjects | An open subject folds into a typed field only if its value parses as that type. "Monthly fee", "Subscription fee" and similar names fold into Recurring price, which removes the duplicate price rows in the final document. |
+| Open subjects | An open subject folds into a typed field only if its value parses as that type. "Monthly fee", "Monthly service fee", "Subscription fee" and "Recurring fee/charge" fold into Recurring price, which removes the duplicate price rows in the final document. "Initial term (length)" folds into Term length and "Termination notice period" into Termination notice. |
 | Dashboard | The phone-only "Piles" button no longer breaks the desktop grid (a same-specificity `.btn` rule overrode its hide rule). The timeline names `run.sources_changed` and `run.coverage_updated` in plain words. |
+
+Later changes, on the same footing: the amendment prompt is `adjudication/4`
+(each side shows its paragraph, an `agree` verdict exists, evidence must be
+copied verbatim from SIDE_B, and a document's own effective date is never an
+amendment of the agreement's); a price file that cannot be read is reported as an
+`invalid` pricing warning; the product is named "Document Analyst", and
+`tests/test_brand.py` keeps the API's icon copy identical to the dashboard's.
 
 Verified live: closing the tab mid-extraction, reopening it, restarting the API with
 the tab open, reloading mid-review, closing the tab right after the last approval, and
@@ -37,7 +44,7 @@ pre-existing optional HTTP bearer guard remains for integrations; leave
 | Source history and duplicates | A→B→A restores the correct facts; aliases survive original replacement/removal without duplicating facts. Complete scans prune vanished copy paths; incomplete scans preserve them. |
 | Extraction and disagreements | Failed sections keep the whole document queued, and publication waits for all pending documents. Three distinct values cannot settle from comparing just two. |
 | Review integrity | API and fenced commit validate current source evidence. Stale choices reopen review; only applied decisions become committed. |
-| Limits and providers | Document batches are bounded. Durable cost reservations cover each model/embedding attempt and survive crash/review resumes. Missing, invalid or expired prices block calls. Extraction and judge models are separate. Explicit retry is available after fixing configuration. |
+| Limits and providers | *(Partly superseded — see Second review follow-up: cost reservations and price blocking were removed.)* Document batches are bounded. Durable cost reservations cover each model/embedding attempt and survive crash/review resumes. Missing, invalid or expired prices block calls. Extraction and judge models are separate. Explicit retry is available after fixing configuration. |
 | Dashboard | Pile and citation request identities prevent late-response mixups. Unicode highlights use code points. Mobile navigation/source/download layouts and keyboard/modal/reduced-motion behavior were fixed. |
 | Uploads and scheduling | Unsupported uploads return 415; dropped unsupported files are quarantined and listed. Discovery/repair runs independently of long graph work. |
 | Test isolation and CI | Unique scratch database names isolate concurrent suites. Tests have a separate Compose profile. A GitHub Actions workflow now runs frontend/browser and full container checks; remote CI has not been invoked. |
@@ -78,6 +85,8 @@ here; regressions were added during the follow-up.
 
 ### 1. Reverting a source file retains the newer source's terms
 
+> **Current status:** Fixed. Regression: `test_reverting_source_restores_its_actual_terms` and `test_restoring_an_original_after_alias_promotion_does_not_duplicate_terms` (`tests/test_audit_regressions.py`).
+
 **Locations:** `backend/src/documents_analyst/worker/ingest.py:154`,
 `backend/src/documents_analyst/db/repo/documents.py:71`.
 
@@ -94,6 +103,8 @@ and the superseding version's surviving paths together.
 
 ### 2. One successful section hides failed extraction sections
 
+> **Current status:** Fixed, then extended in the second review: an incomplete document publishes nothing and stays queued (`test_partial_extraction_retries_without_publishing_or_duplicating`); after `job_max_attempts` (3) it is quarantined and the pile carries on (`test_a_section_that_always_fails_is_quarantined_after_the_attempt_limit`).
+
 **Location:** `backend/src/documents_analyst/graph/nodes/extract.py:114` and `:173`.
 
 Completion is based on whether any section answered successfully. If one
@@ -107,6 +118,8 @@ Track successful and failed sections separately and retry unfinished work.
 
 ### 3. A three-way disagreement can be settled after comparing two values
 
+> **Current status:** Fixed; superseded by the chain logic in *Second review follow-up* (`tests/test_amendment_chain.py`, `test_a_three_way_disagreement_never_takes_the_amendment_fast_lane`).
+
 **Locations:** `backend/src/documents_analyst/graph/nodes/classify.py:190` and `:79`.
 
 The prose adjudicator compares only the first two value groups. If it decides
@@ -119,6 +132,8 @@ verdict was `agree`. Require agreement across every group, or retain a conflict
 when any group remains unchecked.
 
 ### 4. An unapplied stale approval is recorded as committed
+
+> **Current status:** Fixed; superseded by the second review — stale approvals are withdrawn and re-asked rather than refused (`test_stale_approved_evidence_returns_to_review_and_can_then_finish`, `test_a_pending_item_with_changed_evidence_is_sent_back_and_asked_again`).
 
 **Locations:** `backend/src/documents_analyst/graph/nodes/commit.py:379` and `:122`.
 
@@ -135,6 +150,8 @@ Reopen stale choices for review.
 
 ### 5. Switching piles can show and download another pile's document
 
+> **Current status:** Fixed. Playwright regression: "late pile responses cannot replace another pile's document or review queue" (`frontend/e2e/workspace.spec.ts`).
+
 **Location:** `frontend/src/App.tsx:159`.
 
 `loadPile` updates shared state without checking that its requested pile is
@@ -150,6 +167,9 @@ current pile/request identity and clear previous-pile state on selection.
 
 ### 6. Configured budget and document limits are unenforced
 
+> **Superseded.** The spending limit was removed (each run's cost is shown instead) and
+> `max_documents_per_run` is now enforced — see *Second review follow-up*.
+
 **Locations:** `config/runtime.yaml:62`,
 `backend/src/documents_analyst/worker/queue.py:100`.
 
@@ -164,6 +184,8 @@ performed. Enforce limits and explicitly handle models without configured rates.
 
 ### 7. The judge-model setting does not change the model used
 
+> **Current status:** Fixed. The worker builds a separate judge client when `resolved_model_judge` differs (`worker/main.py`); regression `test_judging_uses_the_separately_injected_model`.
+
 **Locations:** `backend/src/documents_analyst/worker/main.py:95`,
 `backend/src/documents_analyst/graph/nodes/audit.py:216`.
 
@@ -174,6 +196,8 @@ Confirmed by tracing client construction and consumers. Inject separate
 extraction and judging clients and test their actual model identities.
 
 ### 8. Unsupported uploads are accepted and then silently ignored
+
+> **Current status:** Fixed. `POST /piles/{pile_id}/documents` returns 415 before writing (`test_unsupported_upload_is_refused_before_writing`); dropped unsupported files are listed in the final coverage (`test_dropped_unsupported_files_are_visible_in_the_final_coverage`).
 
 **Locations:** `backend/src/documents_analyst/api/routes/documents.py:54`,
 `backend/src/documents_analyst/worker/scanner.py:132`.
@@ -186,6 +210,8 @@ quarantined with a reason. Confirmed by following upload and discovery code.
 Reject unsupported uploads immediately and surface unsupported dropped files.
 
 ### 9. Setting API_TOKEN makes the browser workspace unusable
+
+> **Current status:** Still open, by decision. Excluded at the user's request; the dashboard sends no `Authorization` header. Leave `API_TOKEN` blank for dashboard use.
 
 **Locations:** `frontend/src/api/client.ts:31`,
 `frontend/src/hooks/useEvents.ts:24`, `frontend/src/components/DocumentDownload.tsx:48`.
@@ -200,6 +226,8 @@ flow, including streaming and downloads.
 
 ### 10. Citation offsets break after non-BMP Unicode characters
 
+> **Current status:** Fixed. `cut` uses code-point offsets (`frontend/src/api/spans.test.ts`, emoji case) and the Playwright Unicode check.
+
 **Location:** `frontend/src/api/spans.ts:28`.
 
 Backend offsets index Python Unicode code points; JavaScript `slice` indexes
@@ -209,6 +237,8 @@ shift the highlight. Reproduced using the actual transpiled `cut` function:
 `Net 30 days`. Translate offsets consistently and add a Unicode regression case.
 
 ### 11. Opting into live provider tests still blanks every key
+
+> **Current status:** Fixed. `tests/conftest.py` keeps keys for `live` tests when `RUN_LIVE_LLM=1`; `tests/test_llm_live.py` uses the configured extraction model.
 
 **Location:** `tests/conftest.py:24`.
 
@@ -222,6 +252,8 @@ Live tests also hard-code model IDs instead of checking configured model choices
 
 ### 12. The mobile workspace is clipped
 
+> **Current status:** Fixed. Playwright regressions cover the phone layout and the desktop rail.
+
 **Location:** `frontend/src/styles/app.css:47`.
 
 The shell always reserves 250 pixels for its sidebar and keeps a horizontal
@@ -231,6 +263,8 @@ past the viewport, while overflow is hidden. Reproduced with a browser viewport
 and screenshot. Add a collapsible sidebar and a stacked or selectable source view.
 
 ### 13. Thirty-second discovery and recovery are not maintained under load
+
+> **Current status:** Fixed. Regressions: `test_discovery_and_repair_continue_while_graph_work_is_blocked`, `test_a_wake_during_a_drain_starts_the_next_drain_as_soon_as_it_ends`.
 
 **Location:** `backend/src/documents_analyst/worker/main.py:447`.
 
@@ -244,6 +278,8 @@ timing promise and display the delay.
 
 ### 14. Rapid citation clicks can pair the wrong document and highlight
 
+> **Current status:** Fixed. Playwright regression: "late source text cannot replace the selected citation".
+
 **Location:** `frontend/src/App.tsx:239`.
 
 `showCitation` stores the newest citation immediately, then accepts any pending
@@ -255,6 +291,8 @@ obsolete source requests and render only matching citation/document identities.
 
 ### 15. CI is documented but no workflow exists in the checkout
 
+> **Current status:** Fixed. `.github/workflows/ci.yml` runs the dashboard checks and the offline container suite on push and pull request.
+
 **Location:** `docs/TESTING.md`, section 8.
 
 The documentation describes GitHub Actions running checks on pushes and pull
@@ -264,6 +302,8 @@ repository. Supply and verify the workflow before relying on that guarantee.
 External repository-level automation was not inspected.
 
 ### 16. Full-stack startup launches tests; concurrent suites can collide
+
+> **Current status:** Fixed. The `tests` service has its own `tests` profile, and every scratch database name carries a random suffix.
 
 **Locations:** `docker-compose.yml:173`, `tests/test_api.py:71`.
 
@@ -277,6 +317,8 @@ suite at a time. Give tests their own profile and unique scratch names or a
 separate server per suite.
 
 ## P3 accessibility findings
+
+> **Current status:** All three fixed: the welcome dialog traps focus and closes on Escape, review choices support arrow keys (both covered by Playwright), and Framer Motion runs under `MotionConfig reducedMotion="user"` with the citation scroll honouring the reduced-motion setting.
 
 - `frontend/src/components/SetupGuide.tsx:128`: the welcome dialog declares
   itself modal but does not trap focus, make background controls inert, or

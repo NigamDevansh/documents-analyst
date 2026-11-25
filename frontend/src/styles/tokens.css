@@ -42,6 +42,7 @@
   --sans: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
+  --step--2: 0.75rem;
   --step--1: 0.813rem;
   --step-0: 0.938rem;
   --step-1: 1.063rem;
@@ -55,6 +56,7 @@
   --gap-4: 1rem;
   --gap-5: 1.5rem;
   --gap-6: 2.5rem;
+  --bar-height: 4rem; /* the top bar and the rail's head share it */
   --radius: 6px;
   --radius-lg: 10px;
 

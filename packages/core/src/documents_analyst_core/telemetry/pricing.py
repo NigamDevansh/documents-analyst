@@ -20,7 +20,7 @@ too. Storing per-token would mean thirteen decimal places in a config file
 someone has to edit by hand."""
 
 EMPTY: dict[str, tuple[Decimal, Decimal]] = {}
-"""No prices ship. See the module docstring."""
+"""Core ships no prices; the app loads `config/model_prices.json`."""
 
 
 class Unpriced(Exception):

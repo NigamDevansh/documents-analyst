@@ -54,7 +54,7 @@ export function Register({
           {waitingForKeys ? (
             <p>
               The documents have been read and hashed, and extraction is waiting on a model key.
-              Add one to <code>.env</code>, restart, and this pile is picked up where it stopped —
+              Add one to <code>.env</code>, run <code>make up</code> again, and this pile is picked up where it stopped —
               nothing is re-read that has already been read.
             </p>
           ) : (
@@ -115,13 +115,12 @@ function Term({
 
   return (
     <motion.section
-      className="term"
+      className={active ? "term term--active" : "term"}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       // Staggered, but capped: a 40-term register should not take four seconds
       // to finish arriving.
       transition={{ duration: 0.3, delay: Math.min(index * 0.025, 0.35), ease: [0.16, 1, 0.3, 1] }}
-      style={active ? { background: "var(--accent-wash)", borderRadius: "var(--radius)" } : undefined}
     >
       <div className="term__head">
         <span className="term__label">{slot.label}</span>

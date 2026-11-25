@@ -85,8 +85,8 @@ def graph_environment(settings: Settings, *, enabled: bool = True) -> Iterator[G
         return
 
     # Degrade to discovery, do not die. Neither of these has an honest fallback,
-    # but refusing to run the graph is not refusing to start: the README promises
-    # an untouched `.env` starts and names what is missing, so a traceback and
+    # but refusing to run the graph is not refusing to start: an untouched `.env`
+    # must start and name what is missing, so a traceback and
     # restart loop would read as "this project is broken". The worker becomes what
     # `--scan-only` is — finds piles and ingests, claims none for the graph — and
     # every document waits for a key to appear.

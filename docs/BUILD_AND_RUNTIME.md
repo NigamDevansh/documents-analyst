@@ -22,7 +22,8 @@ cp .env.example .env
 docker compose --profile full up --build
 ```
 
-Open one URL. That is the whole setup — one command from a fresh clone — and
+Or `make up`, which also creates `.env` from `.env.example` and seeds the demo
+pile. Open one URL. That is the whole setup — one command from a fresh clone — and
 everything below is in service of it.
 
 ---
@@ -38,7 +39,7 @@ FROM python:3.12-slim AS deps                 # NO application code, ever
 
 # ── 2 · models (built, Phase 2C) ───────────────────────────
 FROM deps AS models                           # NOT `FROM builder` — see below
-  ENV HF_HOME / HUGGINGFACE_HUB_CACHE → /opt/models
+  ENV HF_HOME=/opt/models/hf  HUGGINGFACE_HUB_CACHE=/opt/models/hf/hub  MODEL_CACHE_DIR=/opt/models
   COPY scripts/prefetch_models.py + documents_analyst_core/model_cache.py   # two files only
   RUN python scripts/prefetch_models.py --dir /opt/models
 
@@ -49,16 +50,20 @@ FROM deps AS builder                          # source lands here and nowhere ea
 
 # ── 3b · frontend (built) ───────────────────────────────────
 FROM node:24-slim AS frontend
-  COPY frontend/package*.json  →  npm ci
-  COPY frontend/  →  npm run build      # → /ui/dist  (304K)
+  COPY frontend/package.json frontend/package-lock.json  →  npm ci
+  COPY frontend/  →  npm run build      # → /ui/dist
 
 # ── 4 · runtime ───────────────────────────────────────────
 FROM python:3.12-slim
+  ENV HF_HOME / HUGGINGFACE_HUB_CACHE / MODEL_CACHE_DIR  (as above)
+      WATCH_ROOT=/data/watched  STATIC_DIR=/app/static  HF_HUB_OFFLINE=1
   COPY --from=builder  /app/.venv       /app/.venv
   COPY --from=models   /opt/models      /opt/models
   COPY --from=frontend /ui/dist         /app/static
-  COPY packages/ backend/ db/ scripts/
-  USER app                               # non-root
+  COPY pyproject.toml .env.example config/ Dockerfile docker-compose.yml
+  COPY packages/ backend/ db/ scripts/ fixtures/ tests/
+  USER app                               # non-root, uid 10001
+  CMD uvicorn documents_analyst.api.main:create_app --factory   # compose overrides per service
 ```
 
 **Layer order is the whole trick.** Dependencies resolve before any application
@@ -85,10 +90,15 @@ instead of quietly reaching for the network. Verified the way it is claimed:
 
 ```bash
 docker run --rm --network none documents-analyst-worker pytest -q
-# 289 passed, 25 skipped — fully air-gapped
+# the offline suite, fully air-gapped
 ```
 
-**Image 5.0GB, cold build ~10 min, rebuild ~2 min.**
+The image carries `Dockerfile`, `docker-compose.yml`, `fixtures/` and `tests/`
+because tests read them where the suite actually runs (`make test` runs inside
+this image).
+
+**Image layers ~3.8GB (venv ~1.5GB, weights ~2.25GB); Docker Desktop's
+`docker images` reports ~6.4GB disk usage. Cold build ~10 min, rebuild ~2 min.**
 
 The models stage branches from `deps`, which carries **no application code** —
 that is what makes "editing a Python file never re-downloads 2.2GB" true. An
@@ -130,8 +140,13 @@ which quietly breaks the offline promise while appearing to keep it.
 
 ### Frontend is built in, not served separately
 
-Stage 3 runs `vite build` and the bundle lands at `/app/static`, served by
-FastAPI. One URL, no CORS, one fewer compose service.
+Stage 3b runs `npm run build` (Vite) and the bundle lands at `/app/static`
+(`STATIC_DIR`), served by FastAPI: `/` returns its `index.html` and `/assets`
+its hashed files, including the tab icons built from `frontend/src/assets/`
+(`icon.svg`, `icon-32.png`, `apple-touch-icon.png`). One URL, no CORS, one fewer
+compose service. If `STATIC_DIR` holds no `index.html` (a host-run API before
+`make ui-build`), `/` serves a small status page instead, named and iconed from
+`api/brand.py` ("Document Analyst"), linking `/health` and `/docs`.
 
 `make ui` runs the host Vite dev server with hot reload. There is no Compose
 `dev` profile; the built-in bundle is the normal reviewer path.
@@ -151,15 +166,17 @@ FastAPI. One URL, no CORS, one fewer compose service.
 | `tests` | ours | `pytest`, with no `env_file` | `tests` (explicit selection only) |
 | `pgweb` | `sosedoff/pgweb` | a browser for the database on `:8081` | default |
 
-`docker compose --profile full up` starts the database, `migrate`, `api` and
-`worker`. The MCP services are opt-in, so the base experience stays light.
+`docker compose --profile full up` starts the database, `migrate`, `api`,
+`worker` and `pgweb`; `make up` starts the first four only, detached, and waits
+for them (`--wait`). The MCP services are opt-in, so the base experience stays
+light.
 
 **Why the application services sit behind a profile.** A bare `docker compose
-up` starts Postgres alone, which is the state day-to-day development wants:
+up` starts Postgres (and `pgweb`) alone, which is the state day-to-day development wants:
 `api` and `worker` run on the host with reload and a debugger attached, against
 the same containerised pgvector the full stack uses. A reviewer never types
-that form — `make full-up` is the documented entry point and it passes
-`--profile full`. Both modes are written up in
+that form — `make up` is the documented entry point (`make full-up` runs the
+same stack in the foreground), and both pass `--profile full`. Both modes are written up in
 [`DEVELOPMENT.md`](../DEVELOPMENT.md).
 
 ### Startup order
@@ -210,9 +227,12 @@ demo pile `acme` only when `WATCH_DIR` is the default `./watched` — never into
 folder of yours — and `make seed` refuses to replace an existing `<WATCH_DIR>/acme`
 outside the repo's own `watched/`.
 
-We never edit or delete an existing contract in the watched folder. The API's document
-upload writes a new file there, then discovery remains the single owner of
-hashing, deduplication, aliases, quarantining, and the document row. The only
+The system never edits or deletes a contract in the watched folder. The upload
+endpoint, `POST /piles/{pile_id}/documents`, writes the file into the pile's
+folder (a unique temporary dotfile, then an atomic rename) and wakes the worker;
+an upload with a name already in the folder replaces that file, which the
+scanner reads as a new version. Discovery remains the single owner of hashing,
+deduplication, aliases, quarantining, and the document row. The only
 file the system itself writes is the final document, and the scanner skips
 exactly that name at the pile root.
 
@@ -260,8 +280,8 @@ are always taken one at a time, in the order they were found
 If a folder has no `rulebook.yaml`, the pile still works; the audit stage simply
 has no rules to run and produces zero findings. The name is exact: a
 `rulebook.yml`, `.json` or `.txt` is not applied, and the worker logs a one-time
-warning saying so. OS files (`Thumbs.db`, `desktop.ini`, macOS `Icon\r`) are
-ignored.
+warning saying so. OS files (`Thumbs.db`, `ehthumbs.db`, `desktop.ini`, macOS
+`Icon\r`) are ignored, not quarantined.
 
 ---
 
@@ -300,10 +320,12 @@ not silently replace it. Blank model overrides use the selected provider's defau
 `config/model_prices.json` converts tokens to dollars for the cost report; it
 never blocks a call and there is no spending limit. A model with no entry costs
 0 and is reported as unpriced. `pricing.price_warnings()` flags the configured
-models (extraction, judge, embeddings) with no price, or a price past or within
-14 days of its `valid_until`; the warnings
-appear on `/health` (`pricing.warnings`), in the worker's startup log and on the
-dashboard's Cost tab. See `config/MODEL_PRICING.md`.
+models (extraction, judge, and embeddings when an embedding key is set) with no
+price, or a price past or within 14 days of its `valid_until`, plus an unreadable
+price file; the warnings appear on `/health` (`pricing.warnings`), in the
+worker's startup log and on the dashboard's Cost tab, and never block a run.
+Each run's closing timeline event carries what it spent ("Finished — this run
+cost $X"). See `config/MODEL_PRICING.md`.
 
 ### Embeddings
 
@@ -341,33 +363,46 @@ same sections once.
 ## 7. Make targets
 
 ```
-make up          ← start here: build, migrate, start everything, open the dashboard
-make db-up       start only Docker Postgres for local development
-make full-up     the complete Docker stack in the foreground
-make down        stop everything `make up` started; keeps the database volume
-make seed        copy the demo pile into <WATCH_DIR>/acme (won't replace one of yours)
-make run         discover AND run the graph, in the container with the models
-make test        run the full offline suite
-make test-fast   pytest -m "not models"
-make fmt         ruff format + autofix
-make lint        ruff, no autofix
-make types       mypy over core and backend
-make demo-crash  damage final-document.docx, restart, watch Resolve restore it
-make demo-api    drive the whole workflow over HTTP (needs `make api` running)
-make mcp         the MCP server on stdio, against a local API
-make mcp-tools   list the seven tools and their arguments, without a client
-make ui          dashboard dev server on :5173, API proxied
-make ui-build    build the dashboard the API serves at /
-make ui-test     the dashboard's own unit tests
-make logs        docker compose logs -f worker
+make up            ← start here: create .env if missing, seed the demo pile, build,
+                     start db + migrate + api + worker detached, print the URLs
+make db-up         start only Docker Postgres (and pgweb) for local development — the default goal
+make full-up       the complete Docker stack in the foreground
+make down          stop everything `make up` started; keeps the database volume
+make full-down     stop the stack AND delete the database volume
+make build         rebuild the application image
+make seed          copy the demo pile into <WATCH_DIR>/acme (won't replace one of yours)
+make run           discover AND run the graph once, in the container with the models
+make migrate       apply migrations through Docker      (migrate-local: from the host venv)
+make api           the API on the host with reload, serving frontend/dist
+make worker-local  the worker on the host
+make scan-local    one discovery pass on the host — no models, no LLM key
+make test          the full offline suite in the `tests` service (no .env)
+make test-fast     the same, pytest -m "not models"
+make test-local    pytest from the host venv against local Postgres
+make test-db       the schema-drift suite against a live Postgres
+make fmt           ruff format + autofix
+make lint          ruff, no autofix
+make types         mypy over core and backend
+make demo-crash    damage final-document.docx, restart, watch Resolve restore it
+make demo-api      drive the whole workflow over HTTP (needs `make api` running)
+make mcp           the MCP server on stdio, against a local API
+make mcp-tools     list the seven tools and their arguments, without a client
+make ui            dashboard dev server on :5173, API proxied
+make ui-build      build the dashboard the API serves at /
+make ui-test       the dashboard's own unit tests
+make logs          docker compose logs -f worker
 ```
 
 `make demo-api` changes real state — an approval through it is a real approval,
 and a running worker will commit it. That is deliberate: it is the same door the
 dashboard and the MCP server use, not a read-only tour.
 
-`make run` and `make test` both pass `--build`, so they rebuild changed source
-before launching their one-shot container.
+`make run`, `make test` and `make test-fast` pass `--build`, so they rebuild
+changed source before launching their one-shot container.
+
+CI (`.github/workflows/ci.yml`) runs the dashboard checks (`npm test`, the
+build, Playwright e2e), then the same `tests` service with `--build`: ruff,
+`ruff format --check`, mypy, the fixture checks and `pytest -m "not live"`.
 
 **A pile's `watch_path` is recorded by whoever discovered it.** A pile first
 scanned inside the container holds `/data/watched/acme`, which a host-run API
@@ -390,7 +425,7 @@ Then, in another terminal:
 ```bash
 make test                             # full suite, no keys needed
 make seed                             # a pile appears in the UI
-make demo-crash                       # damage the final document, watch it restored
+make demo-crash                       # once a final document is committed: damage it, watch it restored
 ```
 
 And with an API key added, driving it headlessly:
@@ -406,6 +441,6 @@ claude mcp add documents-analyst -- docker compose run --rm -T mcp
 | Constraint | Detail |
 |---|---|
 | Cold build 5–10 min | torch plus ~2.2GB of model weights. Cached after the first |
-| Image ~5GB | torch plus 2.2GB of baked weights. Down from 10.4GB once the torch CPU index stopped being scoped to `x86_64` — see `CODE_ARCHITECTURE.md` §2.1. int8 ONNX export is the known next optimisation |
+| Image ~3.8GB of layers | torch (~1.5GB venv) plus ~2.25GB of baked weights; Docker Desktop reports ~6.4GB disk usage. Down from 10.4GB once the torch CPU index stopped being scoped to `x86_64` — see `CODE_ARCHITECTURE.md` §2.1. int8 ONNX export is the known next optimisation |
 | arm64 vs x86_64 | Everyone builds locally so each gets their own architecture. The CPU index applies to all Linux architectures; macOS resolves its normal platform wheel from PyPI |
 | No published image | Nothing to pull; the build is the setup |

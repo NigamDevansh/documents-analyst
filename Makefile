@@ -18,7 +18,7 @@ WATCH_DIR ?= $(or $(shell sed -n 's/^WATCH_DIR=//p' .env 2>/dev/null | tail -1),
 #
 # **It must work with no `.env`.** A reviewer's first run has no credentials,
 # and the honest behaviour is a system that starts and says what is missing:
-# the dashboard loads, the banner names each absent key and what it costs, and
+# the dashboard loads, the setup screen names each absent key and what it costs, and
 # the worker discovers and ingests documents while refusing to run the graph.
 # Add a key, and the same pile carries on from where it stopped.
 up:  ## ← START HERE. Build, migrate, start everything, open the dashboard.
@@ -65,10 +65,9 @@ migrate:  ## apply migrations through the full Docker stack
 migrate-local:  ## apply migrations from the local virtual environment
 	DATABASE_URL=$(LOCAL_DATABASE_URL) uv run python -m documents_analyst.db.migrate
 
-# Every path default in `Settings` is the one that is right INSIDE the image —
-# /app/static for the bundle, /data/watched for the piles — because that is where
-# the Dockerfile and compose put them. A process run on the host has to be told
-# the host equivalents, and being told only some of them is worse than none:
+# Path defaults come from config/runtime.yaml (./watched, ./frontend/dist) and
+# compose overrides them with the in-image ones (/data/watched, /app/static). A
+# process run on the host is told the host paths explicitly here, and being told only some of them is worse than none:
 # `make ui-build` then succeeded while localhost:8000 served "dashboard is not
 # built". compose mounts $(WATCH_DIR) to /data/watched, so these are the same files.
 LOCAL_PATHS := STATIC_DIR=./frontend/dist WATCH_ROOT=$(WATCH_DIR) WATCH_DIR_HOST=$(WATCH_DIR)

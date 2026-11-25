@@ -200,8 +200,8 @@ class Settings(BaseSettings):
     """Dev guard: extract only the first N sections of each document."""
     small_sample_sections: int
     model_prices_path: Path
-    """USD per million tokens, per model. Ships empty: a model with no entry is reported
-    unpriced, not free — a stale guess makes a cost report confidently wrong."""
+    """USD per million tokens, per model. Ships verified rates for the default models; a
+    model with no entry is reported unpriced, not free — a stale guess makes a cost report confidently wrong."""
 
     # ── serving ───────────────────────────────────────────────────────────
     static_dir: Path
@@ -333,7 +333,7 @@ class Settings(BaseSettings):
 
     def missing_requirements(self) -> list[str]:
         """Every missing key at once, with what each one costs. A list, not a raise: `docker
-        compose up` with an untouched `.env` must start and show a banner, not exit or fail at
+        compose up` with an untouched `.env` must start and show the setup screen, not exit or fail at
         the first LLM call."""
         missing: list[str] = []
         if not self.llm_api_key:

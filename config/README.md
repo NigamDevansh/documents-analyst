@@ -32,19 +32,27 @@ this directory.
 ## `model_prices.json`
 
 USD **per million tokens**, keyed by the exact model id the provider reports —
-the same string that lands in `stage_runs.model`.
+the same string that lands in `stage_runs.model`. Its location is
+`model_prices_path` in `runtime.yaml`. Core ships no prices of its own; this file
+is the only table.
 
 ```json
 {
-  "provider-model-id": { "input": "INPUT_PER_MILLION", "output": "OUTPUT_PER_MILLION" }
+  "provider-model-id": { "input": "INPUT_PER_MILLION", "output": "OUTPUT_PER_MILLION" },
+  "promo-model-id":    { "input": "…", "output": "…", "valid_until": "YYYY-MM-DD" }
 }
 ```
 
 The table includes verified standard text rates for the default providers and
-embedders. Rates are strings parsed as `Decimal`; negative and non-finite values
-are rejected. Custom models need their own verified rates.
+embedders (`gemini-3.6-flash`, `gpt-4o`, `claude-haiku-5-5`,
+`text-embedding-3-small`, `gemini-embedding-001`) plus `gpt-4o-mini`. Rates are
+strings parsed as `Decimal`; negative and non-finite values are rejected.
+`valid_until` is optional and only drives warnings. Custom models need their own
+verified rates.
 
 Prices only convert tokens to dollars for the cost report: there is no spending
 limit, and a missing or expired price never stops a call. A model with no entry
-is reported as unpriced; an expired one is still used and flagged. See
+is reported as unpriced; an expired one is still used and flagged. Warnings
+cover only the models this deployment calls (extraction, judging, and the
+embedding model when an embedding key is set). See
 [MODEL_PRICING.md](MODEL_PRICING.md) for rate sources and expiry warnings.

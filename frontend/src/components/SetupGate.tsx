@@ -44,7 +44,7 @@ export function SetupGate({ health, onReady }: { health: Health | null; onReady:
   return (
     <div className="gate" role="dialog" aria-modal="true" aria-labelledby="gate-title">
       <div className="gate__card">
-        <p className="gate__eyebrow">Documents Analyst · setup</p>
+        <p className="gate__eyebrow">Document Analyst · setup</p>
         <h1 id="gate-title">
           {missing === 1 ? "One more key before you start" : "Add your API keys to start"}
         </h1>

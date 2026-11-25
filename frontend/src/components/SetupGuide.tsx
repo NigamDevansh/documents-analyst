@@ -11,14 +11,17 @@ import { KeyRequirements } from "./KeyRequirements";
  * `inline` fills the workspace while no folder has been found yet, because that is
  * exactly when someone needs to know where to put one.
  *
- * See README.md § "Run it locally".
+ * See README.md § "Quick start".
  */
 export function SetupGuide({
   health,
+  unreachable = false,
   variant,
   onDismiss,
 }: {
   health: Health | null;
+  /** The health request failed, as opposed to not having answered yet. */
+  unreachable?: boolean;
   variant: "modal" | "inline";
   onDismiss?: () => void;
 }) {
@@ -71,7 +74,9 @@ export function SetupGuide({
           {requirements.length > 0 ? (
             <KeyRequirements requirements={requirements} />
           ) : (
-            <span className="setup__note">Could not ask the API which keys are set.</span>
+            <span className="setup__note">
+              {unreachable ? "Could not ask the API which keys are set." : "Checking which keys are set…"}
+            </span>
           )}
         </li>
         <li>

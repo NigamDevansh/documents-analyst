@@ -1,6 +1,8 @@
 import { motion } from "framer-motion";
 import type { Cost, Finding, PriceWarning } from "../api/types";
 
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
 /** Milliseconds as something a person reads: `840ms`, `9.2s`, `3m 04s`.
 
  * Shown rather than raw ms because "where did the run go" is a question about
@@ -44,10 +46,10 @@ export function CostPanel({
         >
           <span className="stat">
             {unpriced
-              ? `${cost.calls} calls, no rates configured — never reported as free`
+              ? `${plural(cost.calls, "call")}, no rates configured — never reported as free`
               : unpricedCalls > 0
-                ? `${cost.calls} calls, plus ${unpricedCalls} with no price (not included)`
-                : `${cost.calls} calls`}
+                ? `${plural(cost.calls, "call")}, plus ${unpricedCalls} with no price (not included)`
+                : plural(cost.calls, "call")}
           </span>
         </Metric>
 
@@ -87,7 +89,7 @@ export function CostPanel({
               .filter((row) => !priceWarnings.some((w) => w.model === row.model && w.state === "missing"))
               .map((row) => (
                 <p key={row.model} style={{ margin: 0 }}>
-                  {row.calls} call{row.calls === 1 ? "" : "s"} to {row.model} have no price in{" "}
+                  {plural(row.calls, "call")} to {row.model} {row.calls === 1 ? "has" : "have"} no price in{" "}
                   <code>config/model_prices.json</code>, so they are not in the total.
                 </p>
               ))}
@@ -104,7 +106,7 @@ export function CostPanel({
             <table className="plain">
               <thead>
                 <tr>
-                  <th>Node</th>
+                  <th>Stage</th>
                   <th>Calls</th>
                   <th>Tokens in</th>
                   <th>Tokens out</th>

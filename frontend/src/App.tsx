@@ -58,6 +58,8 @@ export default function App() {
   // what somebody debugging a pile actually wants.
   const [pileId, setPileId] = useState<string | null>(() => readHash().pile);
   const [health, setHealth] = useState<Health | null>(null);
+  // Kept apart from `health === null`, which also means "not answered yet".
+  const [healthFailed, setHealthFailed] = useState(false);
   const [tab, setTab] = useState<Tab>(() => readHash().tab);
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (document.documentElement.dataset.theme as "light" | "dark") ?? "light",
@@ -131,7 +133,16 @@ export default function App() {
   }, [pileId, tab]);
 
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setHealth(null));
+    api
+      .health()
+      .then((h) => {
+        setHealth(h);
+        setHealthFailed(false);
+      })
+      .catch(() => {
+        setHealth(null);
+        setHealthFailed(true);
+      });
   }, []);
 
   // A hash edited by hand (or a link followed inside the open tab) changes no
@@ -342,7 +353,7 @@ export default function App() {
         <header className="topbar">
           <h1>{pile?.name ?? "…"}</h1>
           {loadedPile === pileId && register && <span className="stat">document <b>v{register.version}</b></span>}
-          {pile && <span className="stat"><b>{pile.documents}</b> documents</span>}
+          {pile && <span className="stat"><b>{pile.documents}</b> document{pile.documents === 1 ? "" : "s"}</span>}
           {pile && pile.open_conflicts > 0 && (
             <span className="stat"><b>{pile.open_conflicts}</b> disputed</span>
           )}
@@ -357,6 +368,7 @@ export default function App() {
               </span>
             </span>
           )}
+          <span className="topbar__spacer" />
           {pile && (
             <label className="btn" title="Add files to this pile. They are read, checked and reviewed like any other file in its folder.">
               Upload files
@@ -382,7 +394,6 @@ export default function App() {
             </label>
           )}
           {pile && (pile.status === "parked" || pile.status === "error" || (pile.status === "idle" && (pile.retryable ?? 0) > 0)) && <button className="btn" disabled={!actor} title={actor ? (pile.status === "idle" ? `Try again on ${pile.retryable} file(s) whose extraction kept failing` : "Start another analysis with the current configuration") : "Add your name in the sidebar first"} onClick={async () => { try { await api.retry(pile.id, actor!); await loadPiles(); } catch (e) { setToast({ text: (e as Error).message, bad: true }); } }}>Retry analysis</button>}
-          <span className="topbar__spacer" />
           {pile && loadedPile === pileId && register && (
             <DocumentDownload document={register.document} version={register.version} />
           )}
@@ -427,7 +438,7 @@ export default function App() {
         )}
 
         {pilesLoaded && piles.length === 0 ? (
-          <SetupGuide health={health} variant="inline" />
+          <SetupGuide health={health} unreachable={healthFailed} variant="inline" />
         ) : (
           <>
         <div className="tabs" role="tablist">
@@ -542,7 +553,7 @@ export default function App() {
       {/* With no pile yet the same guide already fills the workspace inline; a modal
        * over it would say everything twice. */}
       {!welcomed && !(pilesLoaded && piles.length === 0) && (
-        <SetupGuide health={health} variant="modal" onDismiss={dismissWelcome} />
+        <SetupGuide health={health} unreachable={healthFailed} variant="modal" onDismiss={dismissWelcome} />
       )}
 
       <AnimatePresence>

@@ -48,7 +48,7 @@ def build_server(settings: Settings, api: AnalystApi | None = None) -> MCPServer
     client = api or AnalystApi(settings)
     server: MCPServer = MCPServer(
         name="documents-analyst",
-        version="0.6.0",
+        version="0.7.0",
         instructions=(
             "Read-only tools describe a pile of documents: its register, the "
             "review queue, and the exact source span behind every value. "

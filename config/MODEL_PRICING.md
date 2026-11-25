@@ -28,6 +28,11 @@ Prices only turn those tokens into dollars:
   (`pricing.warnings`), the worker log at startup and the Cost tab say it has
   expired. They also warn 14 days before the date, so there is time to check
   the provider's current rate and update this file.
+- **Warnings are per configured model** — extraction, judging, and the embedding
+  model when an embedding key is set — with a `state` of `missing`, `expiring`,
+  `expired`, or `invalid` (the file could not be read or parsed). None of them
+  blocks a run. The logic is `price_warnings` in
+  `backend/src/documents_analyst/pricing.py`.
 
 These are estimates for ordinary text requests, without caching or batch
 discounts. They are not invoices. Gemini embedding usage is estimated at four
